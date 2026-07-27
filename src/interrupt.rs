@@ -7,7 +7,7 @@
 //! **Latency** asks whether the blackout outlasts a deadline. It is the question
 //! people ask first.
 //!
-//! **Occupancy** asks whether more arrivals land during the blackout than the
+//! **Overrun** asks whether more arrivals land during the blackout than the
 //! buffer holds. It is the question that bites, because a handler that drops
 //! entries when its ring fills and only logs the fact fails without ever missing
 //! a latency figure anyone was watching.
@@ -65,7 +65,7 @@ pub struct Interrupt {
     pub id: InterruptId,
     pub arrival: Arrival,
     /// The latency this interrupt can absorb before it has missed. An interrupt
-    /// with none declared can still be judged on occupancy.
+    /// with none declared can still be judged on overrun.
     pub deadline: Option<Quantity>,
     /// How many arrivals can queue before one is lost.
     pub depth: u32,
@@ -115,7 +115,7 @@ pub struct Judgement {
     /// The weakest provenance among everything the verdict derives from. A
     /// verdict resting on a guessed arrival rate says so.
     pub provenance: Provenance,
-    /// The arrival count for an occupancy judgement, or the blackout for a
+    /// The arrival count for an overrun judgement, or the blackout for a
     /// latency one. Absent where the comparison could not be made.
     pub measured: Option<Quantity>,
 }
@@ -210,7 +210,7 @@ impl Interrupt {
 
     /// Whether this blackout can deliver more arrivals than the buffer holds.
     #[must_use]
-    pub fn occupancy(&self, blackout: Quantity) -> Judgement {
+    pub fn overrun(&self, blackout: Quantity) -> Judgement {
         let gap = self.arrival.shortest_gap();
         match arrivals_during(blackout, gap) {
             Err(missing) => {
@@ -301,7 +301,7 @@ mod tests {
     fn occupancy_counts_the_arrival_at_the_instant_the_window_opens() {
         // A 3000-tick blackout at one arrival per 1000 ticks admits four: one
         // as it opens and three more inside it.
-        let j = line(4).occupancy(q(3_000, 3_000, Unit::Base, Derived));
+        let j = line(4).overrun(q(3_000, 3_000, Unit::Base, Derived));
         assert_eq!(j.measured.unwrap().interval().hi(), 4);
         assert_eq!(j.verdict, Verdict::Met);
     }
@@ -310,11 +310,11 @@ mod tests {
     fn one_more_arrival_than_the_buffer_holds_is_a_miss() {
         // A ring four deep overruns on the fifth arrival, and the latency
         // verdict on the same window is comfortably met, which is the whole
-        // point of asking the occupancy question separately.
+        // point of asking the overrun question separately.
         let blackout = q(4_000, 4_000, Unit::Base, Derived);
         let irq = line(4);
-        assert_eq!(irq.occupancy(blackout).measured.unwrap().interval().hi(), 5);
-        assert_eq!(irq.occupancy(blackout).verdict, Verdict::Missed);
+        assert_eq!(irq.overrun(blackout).measured.unwrap().interval().hi(), 5);
+        assert_eq!(irq.overrun(blackout).verdict, Verdict::Missed);
         assert_eq!(irq.latency(blackout).verdict, Verdict::Met);
     }
 
@@ -330,7 +330,7 @@ mod tests {
             Verdict::Unanswerable(Missing::NoPathToTime(Unit::Iterations))
         );
         assert_eq!(
-            irq.occupancy(blackout).verdict,
+            irq.overrun(blackout).verdict,
             Verdict::Unanswerable(Missing::NoPathToTime(Unit::Iterations))
         );
     }
@@ -344,7 +344,7 @@ mod tests {
             irq.latency(blackout).verdict,
             Verdict::Unanswerable(Missing::NoDeadline)
         );
-        assert_eq!(irq.occupancy(blackout).verdict, Verdict::Met);
+        assert_eq!(irq.overrun(blackout).verdict, Verdict::Met);
     }
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
         let mut irq = line(4);
         irq.arrival = Arrival::MinInterarrival(q(0, 10, Unit::Base, Assumed));
         assert_eq!(
-            irq.occupancy(q(0, 100, Unit::Base, Derived)).verdict,
+            irq.overrun(q(0, 100, Unit::Base, Derived)).verdict,
             Verdict::Unanswerable(Missing::UnboundedArrivals)
         );
     }
@@ -361,7 +361,7 @@ mod tests {
     fn a_guessed_arrival_rate_makes_the_verdict_a_guess() {
         let mut irq = line(4);
         irq.arrival = Arrival::MinInterarrival(q(1_000, 1_000, Unit::Base, Assumed));
-        let j = irq.occupancy(q(3_000, 3_000, Unit::Base, Derived));
+        let j = irq.overrun(q(3_000, 3_000, Unit::Base, Derived));
         assert_eq!(j.verdict, Verdict::Met);
         assert_eq!(j.provenance, Assumed, "the verdict rests on a guess");
     }
@@ -379,7 +379,7 @@ mod tests {
         };
         assert_eq!(irq.arrival.source(), Some(SourceId(0)));
         assert_eq!(
-            irq.occupancy(q(3_000, 3_000, Unit::Base, Derived)).verdict,
+            irq.overrun(q(3_000, 3_000, Unit::Base, Derived)).verdict,
             Verdict::Missed
         );
     }

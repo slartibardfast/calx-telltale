@@ -276,7 +276,7 @@ fn a_blackout_with_no_path_to_time_is_never_judged() {
     let blackout = Quantity::new(any_edge_interval(), any_untimed_unit(), any_provenance());
     let irq = an_interrupt(any_provenance(), kani::any());
     assert!(!irq.latency(blackout).verdict.is_answerable());
-    assert!(!irq.occupancy(blackout).verdict.is_answerable());
+    assert!(!irq.overrun(blackout).verdict.is_answerable());
 }
 
 /// A verdict carries the weakest provenance among the declarations it rests on.
@@ -286,7 +286,7 @@ fn a_verdict_is_no_stronger_than_its_weakest_input() {
     let gap_prov = any_provenance();
     let blackout = Quantity::new(any_edge_interval(), Unit::Base, blackout_prov);
     let irq = an_interrupt(gap_prov, kani::any());
-    let j = irq.occupancy(blackout);
+    let j = irq.overrun(blackout);
     assert!(j.provenance.strength() <= blackout_prov.strength());
     assert!(j.provenance.strength() <= gap_prov.strength());
 }

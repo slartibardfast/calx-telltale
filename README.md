@@ -167,7 +167,7 @@ Following the `calx-mill` idiom.
 | `project` | worst-case cost of each declared composition |
 | `attain` | report the witness: where each maximum occurs |
 | `deadline` | compare projections against declared deadlines, by armed interval |
-| `occupancy` | whether a blackout delivers more arrivals than a buffer holds |
+| `overrun` | whether a blackout delivers more arrivals than a buffer holds |
 | `diff` | register against register, for regression across builds |
 
 The register itself is a hand-authorable, diffable file declaring waits,
@@ -178,7 +178,7 @@ still supply a budget or a measure.
 ## Relationship to calx-mill
 
 [calx-mill](https://github.com/slartibardfast/calx-mill) is a sibling crate, not
-a parent. It computes steady-state throughput and occupancy. Its arithmetic
+a parent. It computes steady-state throughput and overrun. Its arithmetic
 assumes abundant independent work, and asks which resource saturates first.
 
 This problem inverts every axis of that one. There is one work unit where
@@ -199,7 +199,7 @@ about whether any interrupt missed anything. An interrupt therefore declares how
 often it can arrive, what latency it can absorb, and how deep the buffer behind
 it is.
 
-Latency asks whether the blackout outlasts the deadline. Occupancy asks whether
+Latency asks whether the blackout outlasts the deadline. Overrun asks whether
 more arrivals land during the blackout than the buffer holds, and it is the
 question that bites: a handler that drops entries when its ring fills and only
 logs the fact fails without ever missing a latency figure anyone was watching.
