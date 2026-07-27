@@ -1,0 +1,44 @@
+name: Proofs
+
+# The obligations the core carries, discharged by the model checker rather than
+# sampled by tests. A failure here is a claim the crate makes and cannot keep.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned: a model checker is a solver, and a different version can differ in
+  # what it discharges and in how long it takes to do it.
+  KANI_VERSION: 0.67.0
+
+jobs:
+  discharge:
+    runs-on: ubuntu-latest
+    # The whole suite discharges in about a minute. Reaching this bound means a
+    # multiplying harness has lost its boundary domain (call/0009), rather than
+    # that the runner is slow.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache the model checker
+        id: cache-kani
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+            ~/.kani
+          key: kani-${{ env.KANI_VERSION }}-${{ runner.os }}
+
+      - name: Install the model checker
+        if: steps.cache-kani.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked kani-verifier@"$KANI_VERSION"
+          cargo kani setup
+
+      - name: Discharge the obligations
+        run: cargo kani

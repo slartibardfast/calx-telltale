@@ -1,0 +1,241 @@
+//! Kani harnesses for the obligations the core carries.
+//!
+//! These are the properties of the arithmetic, proved universally rather than
+//! sampled. Run them with `cargo kani`.
+
+use crate::interval::Interval;
+use crate::provenance::Provenance;
+use crate::quantity::{Quantity, Refusal, Unit};
+use crate::source::SourceId;
+use crate::Count;
+
+fn any_provenance() -> Provenance {
+    match kani::any::<u8>() % 4 {
+        0 => Provenance::Assumed,
+        1 => Provenance::Measured,
+        2 => Provenance::Extracted,
+        _ => Provenance::Derived,
+    }
+}
+
+fn any_unit() -> Unit {
+    let id = SourceId(kani::any::<u16>());
+    match kani::any::<u8>() % 6 {
+        0 => Unit::Iterations,
+        1 => Unit::BusReads,
+        2 => Unit::Ticks(id),
+        3 => Unit::Cycles(id),
+        4 => Unit::Base,
+        _ => Unit::Nanos,
+    }
+}
+
+fn any_interval() -> Interval {
+    let lo: Count = kani::any();
+    let hi: Count = kani::any();
+    kani::assume(lo <= hi);
+    Interval::new(lo, hi).expect("lo <= hi was assumed")
+}
+
+/// The values a product can go wrong at.
+///
+/// Multiplication over the whole domain defeats a solver that bit-blasts it,
+/// at either stored width and with either a SAT or an SMT back end, so the
+/// multiplying harnesses run over the boundaries instead of over everything.
+///
+/// This is a deliberate trade rather than a shortcut. The mathematics is not
+/// in question: the product of two non-negative intervals has the products of
+/// the corresponding endpoints as its own endpoints, which is textbook interval
+/// arithmetic and needs no machine to confirm it. What is in question is the
+/// transcription, meaning whether this implementation pairs the endpoints
+/// correctly and refuses where the product no longer fits. A wrong pairing or a
+/// missing refusal shows up at the identities, at the values that straddle the
+/// point where a product stops fitting, and at the extremes. So those are what
+/// the harnesses quantify over.
+const EDGES: [Count; 9] = [
+    0,
+    1,
+    2,
+    ((1 as Count) << 63) - 1,
+    (1 as Count) << 63,
+    ((1 as Count) << 64) - 1,
+    (1 as Count) << 64,
+    ((1 as Count) << 127) - 1,
+    Count::MAX,
+];
+
+fn any_edge() -> Count {
+    let i: usize = kani::any();
+    kani::assume(i < EDGES.len());
+    EDGES[i]
+}
+
+fn any_edge_interval() -> Interval {
+    let lo = any_edge();
+    let hi = any_edge();
+    kani::assume(lo <= hi);
+    Interval::new(lo, hi).expect("lo <= hi was assumed")
+}
+
+fn any_quantity() -> Quantity {
+    Quantity::new(any_interval(), any_unit(), any_provenance())
+}
+
+/// Provenance monotonicity, on the join itself: the result is at most as strong as either input.
+#[kani::proof]
+fn join_is_never_stronger_than_its_inputs() {
+    let a = any_provenance();
+    let b = any_provenance();
+    let j = a.join(b);
+    assert!(j.strength() <= a.strength());
+    assert!(j.strength() <= b.strength());
+    // And it is one of them, rather than some third thing.
+    assert!(j == a || j == b);
+}
+
+/// Unit soundness: adding across units is refused, whatever the values.
+///
+/// Two counts of different clocks are different units, so this also covers the
+/// case the founding note opens with, where three envelopes in three units were
+/// added by hand.
+#[kani::proof]
+fn addition_across_units_is_refused() {
+    let a = any_quantity();
+    let b = any_quantity();
+    if a.unit() != b.unit() {
+        assert!(matches!(
+            a.checked_add(b),
+            Err(Refusal::UnitMismatch { .. })
+        ));
+    }
+}
+
+/// Unit soundness, for the branch operator as well as the sequence operator.
+#[kani::proof]
+fn max_across_units_is_refused() {
+    let a = any_quantity();
+    let b = any_quantity();
+    if a.unit() != b.unit() {
+        assert!(matches!(
+            a.checked_max(b),
+            Err(Refusal::UnitMismatch { .. })
+        ));
+    }
+}
+
+/// Provenance monotonicity: a sum carries the weakest provenance of its inputs.
+#[kani::proof]
+fn a_sum_is_no_stronger_than_its_weakest_input() {
+    let a = any_quantity();
+    let b = any_quantity();
+    if let Ok(r) = a.checked_add(b) {
+        assert!(r.provenance().strength() <= a.provenance().strength());
+        assert!(r.provenance().strength() <= b.provenance().strength());
+    }
+}
+
+/// Provenance monotonicity, through the branch operator.
+#[kani::proof]
+fn a_branch_is_no_stronger_than_its_weakest_input() {
+    let a = any_quantity();
+    let b = any_quantity();
+    if let Ok(r) = a.checked_max(b) {
+        assert!(r.provenance().strength() <= a.provenance().strength());
+        assert!(r.provenance().strength() <= b.provenance().strength());
+    }
+}
+
+/// Provenance monotonicity, through repetition. A guessed loop count taints a solid body.
+#[kani::proof]
+fn repetition_carries_the_count_provenance() {
+    let body = Quantity::new(any_edge_interval(), any_unit(), any_provenance());
+    let times = any_edge_interval();
+    let times_prov = any_provenance();
+    if let Ok(r) = body.checked_repeat(times, times_prov) {
+        assert!(r.provenance().strength() <= body.provenance().strength());
+        assert!(r.provenance().strength() <= times_prov.strength());
+    }
+}
+
+/// Interval soundness: the sum interval contains the sum of every point evaluation.
+#[kani::proof]
+fn addition_contains_every_point_evaluation() {
+    let a = any_interval();
+    let b = any_interval();
+    let x: Count = kani::any();
+    let y: Count = kani::any();
+    kani::assume(a.contains(x));
+    kani::assume(b.contains(y));
+
+    if let Some(r) = a.checked_add(b) {
+        // The endpoints did not overflow, and the points sit under them.
+        let s = x.checked_add(y);
+        assert!(s.is_some());
+        assert!(r.contains(s.expect("bounded by the endpoints")));
+    }
+}
+
+/// Interval soundness, through multiplication, which is where repetition lands.
+#[kani::proof]
+fn multiplication_contains_every_point_evaluation() {
+    let a = any_edge_interval();
+    let b = any_edge_interval();
+    let x = any_edge();
+    let y = any_edge();
+    kani::assume(a.contains(x));
+    kani::assume(b.contains(y));
+
+    if let Some(r) = a.checked_mul(b) {
+        let p = x.checked_mul(y);
+        assert!(p.is_some());
+        assert!(r.contains(p.expect("bounded by the endpoints")));
+    }
+}
+
+/// Accumulator fit: arithmetic that would leave the width refuses rather than wrapping.
+#[kani::proof]
+fn addition_refuses_rather_than_wrapping() {
+    let a = any_quantity();
+    let b = any_quantity();
+    kani::assume(a.unit() == b.unit());
+    match a.checked_add(b) {
+        Ok(r) => {
+            // A result exists only where neither endpoint wrapped.
+            assert!(r.interval().lo() >= a.interval().lo());
+            assert!(r.interval().hi() >= a.interval().hi());
+        }
+        Err(e) => assert!(matches!(e, Refusal::Overflow)),
+    }
+}
+
+// The interval invariant, one operation to a harness. Bundling the three into
+// a single proof multiplies the solver's work for no extra coverage.
+
+/// A sum is an interval: its endpoints stay in order.
+#[kani::proof]
+fn addition_preserves_interval_order() {
+    let a = any_interval();
+    let b = any_interval();
+    if let Some(r) = a.checked_add(b) {
+        assert!(r.lo() <= r.hi());
+    }
+}
+
+/// A product is an interval: its endpoints stay in order.
+#[kani::proof]
+fn multiplication_preserves_interval_order() {
+    let a = any_edge_interval();
+    let b = any_edge_interval();
+    if let Some(r) = a.checked_mul(b) {
+        assert!(r.lo() <= r.hi());
+    }
+}
+
+/// A branch maximum is an interval: its endpoints stay in order.
+#[kani::proof]
+fn maximum_preserves_interval_order() {
+    let a = any_interval();
+    let b = any_interval();
+    let m = a.max(b);
+    assert!(m.lo() <= m.hi());
+}

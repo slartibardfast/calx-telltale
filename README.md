@@ -27,8 +27,9 @@ model is a declaration written by a human or emitted by an adapter.
 Every number is a `Quantity`: an interval, a unit, and a provenance. The model
 holds no bare integers.
 
-Units are typed and closed. `Ticks` and `Cycles` carry their rate, so two
-differently-clocked quantities cannot be confused for one another.
+Units are typed and closed. `Ticks` and `Cycles` name the clock they were
+counted against rather than carrying a rate, so two differently-clocked
+quantities cannot be added and a rate never enters the model as a bare integer.
 `Iterations` and `BusReads` have no conversion to time at all. Supplying one
 requires a declared `Conversion` carrying its own provenance, and every result
 that used it inherits that provenance.
@@ -38,6 +39,64 @@ rule is that a result carries the weakest provenance of anything in its
 derivation. A single assumed input makes the whole answer assumed, and it is
 labelled that way wherever it is printed. This is the property the name
 promises, and it is the reason the tool exists.
+
+## Timing sources
+
+The core knows no particular clock. An interval timer, an event timer and a
+part-specific timer an adopter alone has are all declarations of the same shape,
+referenced by identifier. A source declares a nominal frequency, a tolerance, a
+counter width, what one read of it costs, and the span over which it can be
+trusted.
+
+**A frequency is an exact rational.** A common interval timer runs at `105/88`
+MHz, and no integer count of hertz represents it. Storing a rounded frequency
+would put an error into the one value that turns a count into a time, so nothing
+here rounds. The figures usually quoted for such parts are themselves roundings,
+and a base derived from them is a base for a clock that does not exist.
+
+**A register composes in its own base.** Where several clocks are declared, the
+tool derives the frequency in which every declared period is a whole number of
+ticks, and composition there is exact integer arithmetic that introduces no
+rounding at all. This is the idea behind Facebook's `flicks` applied at the scope
+where the set of rates is actually finite, which is one register rather than the
+world. Two clocks at `105/88` MHz and four times the colour burst share a base of
+157500000 Hz, in which their periods are exactly 132 and 11 ticks.
+
+The derivation is guarded, and the tool reports the span its base can represent.
+A finer base buys resolution and spends range, so a register whose windows do not
+fit is told at the point the base is derived.
+
+**Clocks form a tree.** Real parts rarely have independent clocks. A core clock
+comes off a synthesiser, the only counter runs at the core rate, a kernel tick
+comes off a compare on that counter, and a sleep primitive rides the tick.
+Declaring the tree buys three things: the derived rates are exact, a declared
+frequency that disagrees with its parent and ratio is caught, and clocks sharing
+a root are known to fail together rather than being worst-cased as though they
+were independent.
+
+**Trust is span-scoped, and it propagates.** A clock is no more trustworthy than
+the clock it hangs off. Where a synthesiser is reconfigured while the part runs
+on it, nothing beneath it can measure anything at all, and that includes the
+reconfiguration. A conversion across such a span is refused rather than taken against a
+stale rate, which is why a window measured there is honestly denominated in loop
+passes.
+
+## Delays
+
+A delay is what binds a wait to a clock, and the register tells three kinds
+apart by how tightly they are bound.
+
+A timer-backed sleep names its clock, the granularity of one tick, and the
+rounding it applies. A calibrated busy loop names the clock its calibration was
+taken against, which matters more than it sounds: the loop reads no counter
+while it runs, so it holds only while that clock stays at its nominal rate. A
+bare spin names nothing, and its cost stays a count.
+
+Rounding is part of the model because it can dominate. A sleep on a one
+kilohertz tick that rounds up has a floor of one millisecond, so a caller asking
+for a microsecond gets a millisecond and pays a thousand times what it asked
+for. That is structural rather than a defect, and a model that ignored the
+rounding would understate such a wait by three orders of magnitude.
 
 ## Composition
 
@@ -70,17 +129,32 @@ The arithmetic is verified with [Kani](https://model-checking.github.io/kani/).
 
 | | |
 |---|---|
-| K1 | termination: every wait's measure is well-founded and strictly decreasing |
-| K2 | the declared budget fits the counter type that holds it |
-| K3 | every reachable composition fits its accumulator type |
-| K4 | attainment: the reported maximum is a true maximum over the declared domain |
-| K5 | unit soundness: combining units requires a declared conversion |
-| K6 | provenance monotonicity: a result is at most as strong as its weakest input |
-| K7 | interval soundness: the result interval is conservative |
+| termination | every wait's measure is well-founded and strictly decreasing |
+| counter fit | the declared budget fits the counter type that holds it |
+| accumulator fit | every reachable composition fits its accumulator type |
+| attainment | the reported maximum is a true maximum over the declared domain |
+| unit soundness | combining units requires a declared conversion |
+| provenance monotonicity | a result is at most as strong as its weakest input |
+| interval soundness | the result interval is conservative |
 
-K2, K5, K6 and K7 are small bounded harnesses. K1 and K4 want loop contracts,
-because realistic budgets run to thousands of iterations and unrolling them is
-not viable.
+Units, provenance and refusal are quantified over everything their types admit,
+and they discharge in seconds. The obligations that turn on multiplication are
+quantified over boundary values instead: the identities, the values either side
+of the point where a product stops fitting the stored width, and the extremes.
+Multiplication over the whole domain defeats a solver that bit-blasts it, at any
+stored width and with either a SAT or an SMT back end, and the property itself
+is textbook interval arithmetic rather than anything this crate invents. What
+the proof really checks is the transcription, meaning whether the endpoints are
+paired correctly and the refusal fires, and that shows at the boundaries.
+
+Termination and attainment are quantified over a whole declared domain, so they
+are proved with loop contracts rather than by unrolling a budget that runs to
+thousands of iterations.
+
+Every stored count is a `u128` behind a single alias, and arithmetic refuses
+rather than wraps. The width is deliberately generous: the register composes in
+the finest base it can derive, and a narrow store would put a ceiling on how
+fine that base is allowed to be.
 
 ## Subcommands
 

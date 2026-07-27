@@ -1,0 +1,22 @@
+[package]
+name = "calx-telltale"
+version = "0.1.0"
+edition = "2021"
+# Held below the toolchain the host builds with, because the model checker
+# ships its own and refuses a crate that demands a newer one.
+rust-version = "1.85"
+license = "Unlicense"
+description = "A verified calculator for waits, interrupts-off windows, and the compositions built out of them"
+repository = "https://github.com/slartibardfast/calx-telltale"
+
+# No dependencies. The verified core is arithmetic over integer intervals, and a
+# dependency here would be a dependency inside the proof boundary.
+[dependencies]
+
+[profile.release]
+strip = true
+
+# `kani` is set by the model checker rather than by cargo, so it has to be
+# declared or every build warns about the proof module's gate.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -1,0 +1,2 @@
+# Build output, including the model checker's working tree under target/kani.
+/target/

@@ -1,0 +1,41 @@
+name: Test
+
+# The suite, the formatter and the lints, all on a pinned toolchain. An ambient
+# toolchain makes a green lane say less than it appears to.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The toolchain the host builds this component with.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.95.0
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Suite
+        run: cargo test --locked
+
+  floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The crate declares a version floor below the toolchain the host builds
+      # with, so that the model checker's own rustc can compile it. Without this
+      # lane the floor drifts upward unnoticed and the proof lane stops running.
+      - name: Install the declared floor
+        run: rustup toolchain install 1.85.0 --profile minimal
+      - name: Build at the floor
+        run: cargo +1.85.0 check --locked --all-targets
