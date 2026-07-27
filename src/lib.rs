@@ -40,6 +40,7 @@
 /// derivation give up on registers it should have served.
 pub type Count = u128;
 
+pub mod interrupt;
 pub mod interval;
 pub mod provenance;
 pub mod quantity;
@@ -49,6 +50,7 @@ pub mod source;
 #[cfg(kani)]
 mod proofs;
 
+pub use interrupt::{Arrival, Interrupt, InterruptId, Judgement, Missing, Sweep, Verdict};
 pub use interval::Interval;
 pub use provenance::Provenance;
 pub use quantity::{Quantity, Refusal, Unit};

@@ -167,6 +167,7 @@ Following the `calx-mill` idiom.
 | `project` | worst-case cost of each declared composition |
 | `attain` | report the witness: where each maximum occurs |
 | `deadline` | compare projections against declared deadlines, by armed interval |
+| `occupancy` | whether a blackout delivers more arrivals than a buffer holds |
 | `diff` | register against register, for regression across builds |
 
 The register itself is a hand-authorable, diffable file declaring waits,
@@ -191,11 +192,31 @@ over the declaration, verify it, and let adapters populate it from tool output.
 Whether the two can share a `Substrate` abstraction is an open question, and it
 turns on whether its axes are hard-wired to registers and pipes.
 
+## Interrupts
+
+A register measures how long interrupts are off, which on its own says nothing
+about whether any interrupt missed anything. An interrupt therefore declares how
+often it can arrive, what latency it can absorb, and how deep the buffer behind
+it is.
+
+Latency asks whether the blackout outlasts the deadline. Occupancy asks whether
+more arrivals land during the blackout than the buffer holds, and it is the
+question that bites: a handler that drops entries when its ring fills and only
+logs the fact fails without ever missing a latency figure anyone was watching.
+
+Either verdict can be withheld, and a withheld verdict is a verdict rather than
+an error. A blackout counted in loop passes, because its clock was being
+reconfigured while it ran, cannot be compared against a deadline in nanoseconds.
+The tool says which piece is missing and declines, and a run reports how many
+comparisons it withheld so that an exclusion never reads as a clean sweep.
+
 ## Status
 
-Greenfield. The design is settled and the implementation is not yet written. The
-milestones, decisions and verification lanes are governed by the host meta-repo
-at [agentic-calx-telltale](https://github.com/slartibardfast/agentic-calx-telltale).
+The verified core is built: quantities, exact rates, the register base, the tree
+of derived clocks, the delay forms, and the interrupt verdicts. The register
+file format and the command line are still ahead. The milestones, decisions and
+verification lanes are governed by the host meta-repo at
+[agentic-calx-telltale](https://github.com/slartibardfast/agentic-calx-telltale).
 
 ## Licence
 

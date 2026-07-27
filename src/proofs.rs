@@ -3,6 +3,7 @@
 //! These are the properties of the arithmetic, proved universally rather than
 //! sampled. Run them with `cargo kani`.
 
+use crate::interrupt::{Arrival, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Refusal, Unit};
@@ -238,4 +239,54 @@ fn maximum_preserves_interval_order() {
     let b = any_interval();
     let m = a.max(b);
     assert!(m.lo() <= m.hi());
+}
+
+// The interrupt verdicts. What is worth proving here is that a comparison the
+// register cannot support is never resolved either way, and that a verdict
+// never claims more standing than the weakest thing it rests on.
+
+fn any_untimed_unit() -> Unit {
+    if kani::any::<bool>() {
+        Unit::Iterations
+    } else {
+        Unit::BusReads
+    }
+}
+
+fn an_interrupt(gap_prov: Provenance, depth: u32) -> Interrupt {
+    Interrupt {
+        id: InterruptId(0),
+        arrival: Arrival::MinInterarrival(Quantity::new(any_edge_interval(), Unit::Base, gap_prov)),
+        deadline: Some(Quantity::new(
+            any_edge_interval(),
+            Unit::Base,
+            any_provenance(),
+        )),
+        depth,
+    }
+}
+
+/// A window with no path to a time is never judged, whatever else is declared.
+///
+/// This is the refusal the whole design turns on. A blackout measured while its
+/// clock was being reconfigured is counted in loop passes, and no declaration
+/// elsewhere in the register can make that comparable to a deadline.
+#[kani::proof]
+fn a_blackout_with_no_path_to_time_is_never_judged() {
+    let blackout = Quantity::new(any_edge_interval(), any_untimed_unit(), any_provenance());
+    let irq = an_interrupt(any_provenance(), kani::any());
+    assert!(!irq.latency(blackout).verdict.is_answerable());
+    assert!(!irq.occupancy(blackout).verdict.is_answerable());
+}
+
+/// A verdict carries the weakest provenance among the declarations it rests on.
+#[kani::proof]
+fn a_verdict_is_no_stronger_than_its_weakest_input() {
+    let blackout_prov = any_provenance();
+    let gap_prov = any_provenance();
+    let blackout = Quantity::new(any_edge_interval(), Unit::Base, blackout_prov);
+    let irq = an_interrupt(gap_prov, kani::any());
+    let j = irq.occupancy(blackout);
+    assert!(j.provenance.strength() <= blackout_prov.strength());
+    assert!(j.provenance.strength() <= gap_prov.strength());
 }
