@@ -3,7 +3,7 @@
 //! These are the properties of the arithmetic, proved universally rather than
 //! sampled. Run them with `cargo kani`.
 
-use crate::expr::{Exhaustion, Expr, Wait, WaitId};
+use crate::expr::{Counter, CounterFit, Exhaustion, Expr, Measure, Termination, Wait, WaitId};
 use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
@@ -325,6 +325,8 @@ fn any_wait(budget: Count, per_iter: Count) -> Wait {
     Wait {
         id: WaitId(0),
         budget,
+        counter: Counter::U64,
+        measure: Measure::PreDecrement,
         cost_per_iter: Quantity::new(Interval::point(per_iter), Unit::BusReads, any_provenance()),
         on_exhaustion: Exhaustion::ReportsError,
     }
@@ -353,5 +355,58 @@ fn a_wait_never_polls_past_its_budget() {
     let w = Expr::Leaf(any_wait(budget, 1));
     if let Ok(o) = w.eval(latency, Unit::BusReads) {
         assert!(o.cost.interval().hi() <= budget);
+    }
+}
+
+// Termination and counter fit. Both are decisions rather than arithmetic, so
+// they quantify over everything their types admit rather than over boundaries.
+
+fn any_counter() -> Counter {
+    match kani::any::<u8>() % 4 {
+        0 => Counter::U8,
+        1 => Counter::U16,
+        2 => Counter::U32,
+        _ => Counter::U64,
+    }
+}
+
+fn any_measure() -> Measure {
+    match kani::any::<u8>() % 3 {
+        0 => Measure::PreDecrement,
+        1 => Measure::PostDecrement,
+        _ => Measure::Increment { limit: kani::any() },
+    }
+}
+
+/// A counter tested after it moves is never well-founded, whatever it counts to.
+///
+/// This is the whole of the termination obligation at the leaf. A bound stated
+/// in a declaration is not a bound on behaviour unless the test sees the value
+/// the decrement produced.
+#[kani::proof]
+fn a_measure_tested_after_it_moves_never_terminates() {
+    let mut w = any_wait(kani::any(), 1);
+    w.measure = any_measure();
+    if w.measure == Measure::PostDecrement {
+        assert_eq!(w.termination(), Termination::Wraps);
+    }
+}
+
+/// A budget fits exactly when it is no larger than its counter, and the
+/// reported headroom is the difference.
+#[kani::proof]
+fn a_budget_fits_exactly_when_the_counter_holds_it() {
+    let mut w = any_wait(kani::any(), 1);
+    w.counter = any_counter();
+    let holds = w.counter.holds();
+    match w.counter_fit() {
+        CounterFit::Fits { headroom } => {
+            assert!(w.budget <= holds);
+            assert_eq!(headroom, holds - w.budget);
+        }
+        CounterFit::Overruns { budget, holds: h } => {
+            assert!(budget > h);
+            assert_eq!(h, holds);
+        }
     }
 }

@@ -33,15 +33,123 @@ pub enum Exhaustion {
     SilentlyContinues,
 }
 
+/// The width of the counter a budget is held in.
+///
+/// A budget larger than its counter is a bound in the documentation and none in
+/// the behaviour, so the width is declared rather than inferred.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Counter {
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl Counter {
+    /// The largest value this counter holds.
+    #[must_use]
+    pub const fn holds(self) -> Count {
+        match self {
+            Counter::U8 => u8::MAX as Count,
+            Counter::U16 => u16::MAX as Count,
+            Counter::U32 => u32::MAX as Count,
+            Counter::U64 => u64::MAX as Count,
+        }
+    }
+}
+
+/// How a wait's counter moves, and what the loop test sees when it does.
+///
+/// This is declared rather than derived because it decides whether the loop
+/// terminates at all, and the two forms are a character apart in the source.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Measure {
+    /// The counter is decremented and then tested, so the test sees the
+    /// decremented value and the loop stops at zero.
+    PreDecrement,
+    /// The counter is tested and then decremented, so a test against zero is
+    /// made on the value before the decrement. The counter passes through zero
+    /// untested and wraps to its maximum, and the timeout never fires.
+    PostDecrement,
+    /// The counter rises to a limit.
+    Increment { limit: Count },
+}
+
+/// Whether a wait's measure is well-founded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Termination {
+    /// The measure decreases on every pass and the test sees it, so the loop
+    /// runs out.
+    WellFounded,
+    /// The measure passes its test untested and wraps, so the bound in the
+    /// declaration is not a bound on the behaviour.
+    Wraps,
+    /// The counter rises to a limit it never reaches.
+    NeverReaches,
+}
+
+/// Whether a budget fits the counter that holds it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CounterFit {
+    Fits {
+        /// How much room is left. A budget one doubling from its ceiling is a
+        /// different fact from one with room to spare.
+        headroom: Count,
+    },
+    /// The budget is larger than the counter, so the counter wraps inside the
+    /// wait and the bound means nothing.
+    Overruns { budget: Count, holds: Count },
+}
+
 /// A polling wait: it asks, and either gets an answer or runs out of budget.
 #[derive(Clone, Copy, Debug)]
 pub struct Wait {
     pub id: WaitId,
     /// The most iterations this wait will make before giving up.
     pub budget: Count,
+    /// The counter the budget is held in.
+    pub counter: Counter,
+    /// How the counter moves, and what the test sees.
+    pub measure: Measure,
     /// What one iteration costs.
     pub cost_per_iter: Quantity,
     pub on_exhaustion: Exhaustion,
+}
+
+impl Wait {
+    /// Whether this wait's measure is well-founded.
+    #[must_use]
+    pub const fn termination(&self) -> Termination {
+        match self.measure {
+            Measure::PreDecrement => Termination::WellFounded,
+            // The test is made before the decrement, so zero is never the
+            // tested value: the counter runs past it and wraps.
+            Measure::PostDecrement => Termination::Wraps,
+            Measure::Increment { limit } => {
+                if limit == 0 {
+                    Termination::NeverReaches
+                } else {
+                    Termination::WellFounded
+                }
+            }
+        }
+    }
+
+    /// Whether the declared budget fits the counter holding it.
+    #[must_use]
+    pub const fn counter_fit(&self) -> CounterFit {
+        let holds = self.counter.holds();
+        if self.budget <= holds {
+            CounterFit::Fits {
+                headroom: holds - self.budget,
+            }
+        } else {
+            CounterFit::Overruns {
+                budget: self.budget,
+                holds,
+            }
+        }
+    }
 }
 
 /// How a composition is built.
@@ -226,7 +334,7 @@ fn zero(unit: Unit) -> Quantity {
 
 #[cfg(test)]
 mod tests {
-    use super::{Exhaustion, Expr, Wait, WaitId};
+    use super::{Counter, CounterFit, Exhaustion, Expr, Measure, Termination, Wait, WaitId};
     use crate::interval::Interval;
     use crate::provenance::Provenance::{Assumed, Derived, Extracted};
     use crate::quantity::{Quantity, Unit};
@@ -236,6 +344,8 @@ mod tests {
         Expr::Leaf(Wait {
             id: WaitId(id),
             budget,
+            counter: Counter::U32,
+            measure: Measure::PreDecrement,
             cost_per_iter: Quantity::new(Interval::point(per_iter), Unit::BusReads, Extracted),
             on_exhaustion: Exhaustion::ReportsError,
         })
@@ -345,6 +455,8 @@ mod tests {
             Expr::Leaf(super::Wait {
                 id: WaitId(1),
                 budget: 10,
+                counter: Counter::U32,
+                measure: Measure::PreDecrement,
                 cost_per_iter: Quantity::new(Interval::point(1), Unit::BusReads, Assumed),
                 on_exhaustion: Exhaustion::SilentlyContinues,
             }),
@@ -357,6 +469,62 @@ mod tests {
     fn composing_across_units_is_refused() {
         let e = Expr::Seq(vec![wait(0, 10, 1)]);
         assert!(e.eval(5, Unit::Iterations).is_err());
+    }
+
+    fn bare_wait(budget: Count, counter: Counter, measure: Measure) -> Wait {
+        Wait {
+            id: WaitId(9),
+            budget,
+            counter,
+            measure,
+            cost_per_iter: Quantity::new(Interval::point(1), Unit::BusReads, Extracted),
+            on_exhaustion: Exhaustion::ReportsError,
+        }
+    }
+
+    #[test]
+    fn a_post_decrement_tested_against_zero_never_fires() {
+        // The test is made before the decrement, so the counter runs past zero
+        // untested and wraps. The bound of ten thousand is in the declaration
+        // and nowhere in the behaviour.
+        let w = bare_wait(10_000, Counter::U32, Measure::PostDecrement);
+        assert_eq!(w.termination(), Termination::Wraps);
+    }
+
+    #[test]
+    fn a_pre_decrement_is_well_founded() {
+        let w = bare_wait(10_000, Counter::U32, Measure::PreDecrement);
+        assert_eq!(w.termination(), Termination::WellFounded);
+    }
+
+    #[test]
+    fn a_counter_that_rises_to_nothing_never_gets_there() {
+        let w = bare_wait(10, Counter::U32, Measure::Increment { limit: 0 });
+        assert_eq!(w.termination(), Termination::NeverReaches);
+    }
+
+    #[test]
+    fn a_budget_larger_than_its_counter_is_no_bound_at_all() {
+        // A budget of 0x20000 in a sixteen-bit counter wraps inside the wait.
+        let w = bare_wait(0x2_0000, Counter::U16, Measure::PreDecrement);
+        assert_eq!(
+            w.counter_fit(),
+            CounterFit::Overruns {
+                budget: 0x2_0000,
+                holds: 65_535
+            }
+        );
+    }
+
+    #[test]
+    fn the_fit_reports_the_headroom_left() {
+        // A budget of 0x2000 in a sixteen-bit counter fits, and the headroom is
+        // the fact worth reporting: it is three doublings from the ceiling.
+        let w = bare_wait(0x2000, Counter::U16, Measure::PreDecrement);
+        match w.counter_fit() {
+            CounterFit::Fits { headroom } => assert_eq!(headroom, 65_535 - 0x2000),
+            other => panic!("expected it to fit, got {other:?}"),
+        }
     }
 
     #[test]
