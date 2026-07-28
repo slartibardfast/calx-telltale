@@ -1,2 +1,6 @@
 # Build output, including the model checker's working tree under target/kani.
 /target/
+
+# Release staging: the lane copies the built binaries out of the root-owned
+# build tree before hashing them.
+/dist/

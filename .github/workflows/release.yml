@@ -58,9 +58,15 @@ jobs:
             cargo build --release --locked --offline --target "$TARGET" \
               -p calx-telltale -p calx-telltale-census
 
-      - name: Hash the artifacts
+      # Staged out of the build tree first. The container builds as root, so
+      # target/ is not writable by the runner and the sums cannot be written
+      # beside the binaries they describe.
+      - name: Stage and hash the artifacts
         run: |
-          cd "target/$TARGET/release"
+          mkdir -p dist
+          cp "target/$TARGET/release/calx-telltale" \
+             "target/$TARGET/release/calx-telltale-census" dist/
+          cd dist
           sha256sum calx-telltale calx-telltale-census | tee SHA256SUMS
 
       # The hashes go in the body as well as in the file, so a reader comparing
@@ -69,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd "target/$TARGET/release"
+          cd dist
           {
             echo "Built from ${GITHUB_SHA} in the toolchain the host records,"
             echo "with no network. Both crates carry ${GITHUB_REF_NAME#v} (call/0014)."
