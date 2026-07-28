@@ -2,7 +2,7 @@
 #
 # The interval timer runs at a third of the colour burst, which is exactly
 # 105/88 MHz. Written as a ratio because no whole number of hertz represents it.
-source id=0 hz=105000000 per=88 width=32 ppm=100 from=extracted
+source id=0 hz=105000000 per=88 width=32 ppm=100 from=extracted file=docs/timers.md symbol=PIT_HZ
 
 # A poll that gives up properly: the counter is decremented and then tested.
 wait id=0 budget=8192 cost=1 unit=bus-reads counter=u32 measure=pre-decrement on-exhaustion=reports-error from=derived file=drivers/bus.c symbol=bus_wait_idle

@@ -108,6 +108,9 @@ pub struct Register {
     pub waits: Vec<Wait>,
     /// One per wait, in the same order.
     pub wait_citations: Vec<Citation>,
+    /// One per clock, in the same order. A clock read from a datasheet or a
+    /// capability register has a site as much as a wait does.
+    pub source_citations: Vec<Citation>,
     /// Compositions, each with the identifier it was declared under.
     pub compositions: Vec<(u16, Expr)>,
     pub interrupts: Vec<Interrupt>,
@@ -120,6 +123,15 @@ impl Register {
     #[must_use]
     pub fn citation_for(&self, index: usize) -> Citation {
         self.wait_citations.get(index).cloned().unwrap_or_default()
+    }
+
+    /// The citation for a clock, by its position.
+    #[must_use]
+    pub fn source_citation_for(&self, index: usize) -> Citation {
+        self.source_citations
+            .get(index)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -228,6 +240,7 @@ impl Register {
                         Err(Fault::Missing(_)) => 0,
                         Err(e) => return Err(at(e)),
                     };
+                    reg.source_citations.push(citation(&fs));
                     reg.sources.push(Source {
                         id: SourceId(u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?),
                         origin: Origin::Root,
@@ -493,6 +506,17 @@ on-exhaustion=silently-continues from=extracted
         assert_eq!(c.file.as_deref(), Some("drivers/bus.c"));
         assert_eq!(c.symbol.as_deref(), Some("bus_wait_idle"));
         assert_eq!(c.site(), "drivers/bus.c:bus_wait_idle");
+    }
+
+    #[test]
+    fn a_clock_says_where_its_frequency_was_read_from() {
+        // A frequency read from a datasheet has a site as much as a wait does,
+        // and it is the value most worth tracing: everything timed by that
+        // clock rests on it.
+        let text = "source id=0 hz=105000000 per=88 width=32 from=extracted \
+                    file=docs/timers.pdf symbol=PIT_FREQ";
+        let r = Register::parse(text).unwrap();
+        assert_eq!(r.source_citation_for(0).site(), "docs/timers.pdf:PIT_FREQ");
     }
 
     #[test]

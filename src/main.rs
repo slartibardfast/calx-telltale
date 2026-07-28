@@ -57,6 +57,7 @@ is a comment, so a register can carry the commentary that makes it reviewable.
 Each line is a kind followed by `key=value` fields in any order.
 
   source id=<n> hz=<n> [per=<n>] width=<bits> [ppm=<n>] from=<provenance>
+         [file=<path>] [symbol=<name>]
 
     A declared clock. `hz` over `per` is an exact rational, because a frequency
     such as 105/88 MHz has no representation as a whole number of hertz. `per`
@@ -618,6 +619,19 @@ fn check(path: &str, json: bool) -> i32 {
         register.sources.len(),
         register.waits.len()
     );
+    for (i, src) in register.sources.iter().enumerate() {
+        // The frequency is the value most worth tracing: everything timed by
+        // this clock rests on it.
+        println!(
+            "  clock {} ({}) [{}] nominal {}/{} Hz, tolerance {} ppm",
+            src.id.0,
+            register.source_citation_for(i).site(),
+            src.nominal_prov.as_str(),
+            src.nominal.num(),
+            src.nominal.den(),
+            src.tolerance_ppm
+        );
+    }
     for f in &findings {
         println!(
             "  wait {} ({}) [{}] {}: {}",
