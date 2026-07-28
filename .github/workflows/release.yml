@@ -1,0 +1,84 @@
+name: Release
+
+# The tag is the release. This lane rebuilds the tagged commit in the toolchain
+# the host records, with no network, and publishes both binaries with their
+# hashes. Building here the way the host re-derives means a published artifact
+# and a re-derived one are the same bytes, rather than two builds that happen to
+# come from one commit.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned by digest, and the same image `.host-software` records. A tag is only
+  # a release if what it builds is what the recorded hash names.
+  IMAGE: docker.io/clux/muslrust:1.95.0-stable@sha256:15a72a4abf1c593b0bea63a4a8f20e95c1e5a0696d7051eca87b9b850b2d7e43
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # call/0014 gives the repository one version and has both crates hold it,
+      # so a tag disagreeing with either names a release nobody described. This
+      # is the one check that cannot be made after the fact: once the tag is
+      # published, the disagreement is what a consumer downloads.
+      - name: The tag and both crates agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version_of() {
+            sed -n '/^\[package\]/,/^\[[^p]/p' "$1" |
+              sed -n 's/^version = "\(.*\)"/\1/p' | head -1
+          }
+          core=$(version_of Cargo.toml)
+          census=$(version_of census/Cargo.toml)
+          echo "tag=$tag core=$core adapter=$census"
+          [ -n "$core" ] && [ -n "$census" ] || {
+            echo "::error::could not read a version out of a manifest"; exit 1; }
+          [ "$tag" = "$core" ] || {
+            echo "::error::tag $tag disagrees with the core at $core"; exit 1; }
+          [ "$tag" = "$census" ] || {
+            echo "::error::tag $tag disagrees with the adapter at $census"; exit 1; }
+
+      # Built the way the host re-derives it: the recorded image, no network,
+      # and the locked dependency set. The crate graph is the two workspace
+      # members and nothing else, so --offline needs no vendored bundle.
+      - name: Build in the recorded toolchain
+        run: |
+          docker run --rm --network none \
+            -e RUSTUP_TOOLCHAIN=stable -e CARGO_INCREMENTAL=0 \
+            -v "$PWD":/src -w /src "$IMAGE" \
+            cargo build --release --locked --offline --target "$TARGET" \
+              -p calx-telltale -p calx-telltale-census
+
+      - name: Hash the artifacts
+        run: |
+          cd "target/$TARGET/release"
+          sha256sum calx-telltale calx-telltale-census | tee SHA256SUMS
+
+      # The hashes go in the body as well as in the file, so a reader comparing
+      # against the host's recorded artifact does not have to download anything.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "target/$TARGET/release"
+          {
+            echo "Built from ${GITHUB_SHA} in the toolchain the host records,"
+            echo "with no network. Both crates carry ${GITHUB_REF_NAME#v} (call/0014)."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            calx-telltale calx-telltale-census SHA256SUMS
