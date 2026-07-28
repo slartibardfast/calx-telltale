@@ -31,6 +31,21 @@ impl Provenance {
         self as u8
     }
 
+    /// The stable name a machine-readable surface uses.
+    ///
+    /// Separate from `Debug` on purpose: this one is a compatibility
+    /// commitment, and a derived formatting is not.
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Provenance::Assumed => "assumed",
+            Provenance::Measured => "measured",
+            Provenance::Extracted => "extracted",
+            Provenance::Derived => "derived",
+        }
+    }
+
     /// The weaker of two provenances.
     ///
     /// This is the whole of provenance monotonicity. A result carries the weakest provenance of

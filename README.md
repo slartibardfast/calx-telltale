@@ -259,9 +259,26 @@ jitter, nesting within a priority level, and worst-case execution time itself.
 ## Running it
 
 ```
-calx-telltale check <register>   hold each declaration to its obligations
-calx-telltale limits             what this tool does not model
+calx-telltale check <register> [--json]   hold each declaration to its obligations
+calx-telltale limits [--json]             the failure classes it does not model
+calx-telltale grammar                     the register format, for authoring one
+calx-telltale version [--json]
+calx-telltale help
 ```
+
+**The tool describes itself.** An agent holding only the binary can reach the
+commands, the exit codes, the obligations checked, the provenance ordering and
+the full register grammar without reading anything else, because a surface an
+agent cannot discover is one it will guess at. `help` answers to `-h` and
+`--help` as well, since those are guessed before a subcommand is.
+
+**`--json` is the agent's surface**, and it is a separate one on purpose: an
+interface built for a human does not serve an agent, and a stable structured one
+does not serve a human reading by eye. It emits a single object carrying the
+same facts as fields, with the provenance of every finding, the weakest standing
+across the run, the exit code, and the limits, whether or not anything failed. A
+register that cannot be read is reported in the same shape rather than as bare
+prose on the error stream.
 
 A register is line-oriented, on purpose. It is the artefact committed beside the
 image it describes, so it has to diff cleanly and review in a pull request, and
