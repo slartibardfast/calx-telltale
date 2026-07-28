@@ -187,7 +187,6 @@ Following the `calx-mill` idiom.
 
 | | |
 |---|---|
-| `census` | *(planned)* inventory waits and windows from an ELF; emit a skeleton register |
 | `check` | run the proof obligations against a register |
 | `project` | worst-case cost of each declared composition |
 | `attain` | report the witness: where each maximum occurs |
@@ -195,8 +194,8 @@ Following the `calx-mill` idiom.
 | `overrun` | whether a blackout delivers more arrivals than a buffer holds |
 | `diff` | register against register, for regression across builds |
 
-`census` is the one verb still to come, and the milestone that builds it waits
-on a decision rather than on effort. The register itself is a hand-authorable, diffable file declaring waits,
+Drafting a register from an image is a separate binary rather than a verb here,
+described below. The register itself is a hand-authorable, diffable file declaring waits,
 windows, deadlines, compositions and conversions. An ELF adapter emits a
 skeleton register with `Extracted` provenance and blanks wherever a human must
 still supply a budget or a measure.
@@ -263,6 +262,33 @@ execution time. It also declines to pretend the quantity is absent, because a
 model missing the term cannot say whether anything keeps up at all, so it takes
 the number it is given and carries the provenance. A guessed cost makes every
 verdict resting on it a guess.
+
+## Drafting a register from an image
+
+`calx-telltale-census` reads an image and drafts a register from it, so a
+register is curated rather than authored from nothing.
+
+```
+calx-telltale-census draft <image> [--min-size <n>]
+```
+
+It is a separate binary, and separate on purpose. The core's empty dependency
+list is what lets its release build offline inside a pinned container straight
+from source, and an adapter that reads object formats would spend exactly that.
+It is built on request and stays out of the released artifact.
+
+Every value it can read carries `extracted` provenance and a citation naming the
+file and symbol. Everything a human must decide is written `?`, which the core
+reports as a blank rather than as a missing field.
+
+**What it emits is a candidate list rather than a census, and it says so on
+every draft.** Finding the polling loops inside a function needs instruction
+boundaries, and on the parts this tool is aimed at that is the larger half of
+the work. The draft reports which encoding the image declares and how hard its
+boundaries are to find: strided where every instruction is one width, a fixed
+prefix where the first unit gives the length, and the operand form where the
+length depends on what the instruction does. That third tier is where writing a
+decoder stops being cheap.
 
 ## What it does not model
 

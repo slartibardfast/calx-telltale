@@ -1,6 +1,12 @@
 [package]
 name = "calx-telltale-census"
-version = "0.2.0"
+# Zero, and deliberately. This crate has never been released: call/0011 keeps it
+# out of the canonical artifact, and call/0004 leaves open whether it is ever
+# released on its own. A number tracking the core would imply a lockstep it does
+# not have, and one left at an old release would read as drift. Zero says
+# neither, and needs no hand-synchronising at each release.
+version = "0.0.0"
+publish = false
 edition = "2021"
 rust-version = "1.85"
 license = "Unlicense"
