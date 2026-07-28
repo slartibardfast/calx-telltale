@@ -114,11 +114,21 @@ this operator will report the cheap branch and call it the worst.
 
 ## Attainment
 
-Evaluation returns a cost together with the input at which that cost is
-attained. The witness is the point in the latency domain that produces the
-maximum, and reporting it matters: a maximum can sit one unit inside a budget
-rather than out at the boundary, where a sweep of the extremes would miss it. A
-tool that returned only a number would conceal exactly the thing worth knowing.
+A wait costs what it costs because of something outside the part: how long the
+peripheral takes to answer. That is one parameter, every wait in a composition
+sees the same world, and a cost is therefore a function of it rather than a
+constant.
+
+Evaluation at one latency is cheap. The question worth asking is which latency
+is worst, and the answer is not reliably at either end. A guard that fails costs
+its budget and unwinds. A guard that answers on its last permitted attempt costs
+almost as much and lets everything above it run, so the expensive case can sit
+one step inside the boundary where a sweep of the extremes will not find it.
+
+So evaluation returns a cost together with the latency attaining it, and says
+whether that latency was interior. The search is bounded by the widest budget in
+the composition rather than by any cost, which keeps it small even where the
+costs run to millions: past that bound every wait has already given up.
 
 Monotonicity is never assumed. Where the tool can establish it, it reports it as
 a proved property. Where it cannot, it searches the domain.

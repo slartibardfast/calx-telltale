@@ -3,6 +3,7 @@
 //! These are the properties of the arithmetic, proved universally rather than
 //! sampled. Run them with `cargo kani`.
 
+use crate::expr::{Exhaustion, Expr, Wait, WaitId};
 use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
@@ -314,4 +315,43 @@ fn an_interrupt_at(priority: u8) -> Interrupt {
     let mut irq = an_interrupt(any_provenance(), kani::any());
     irq.priority = priority;
     irq
+}
+
+// Composition. The expression tree is heap-allocated, so the harnesses hold the
+// leaf semantics that every branch of it rests on, and the tests carry the tree
+// (call/0009).
+
+fn any_wait(budget: Count, per_iter: Count) -> Wait {
+    Wait {
+        id: WaitId(0),
+        budget,
+        cost_per_iter: Quantity::new(Interval::point(per_iter), Unit::BusReads, any_provenance()),
+        on_exhaustion: Exhaustion::ReportsError,
+    }
+}
+
+/// A wait reports success exactly while the answer arrives inside its budget.
+///
+/// The short-circuit operator turns on this boundary: one step earlier the body
+/// runs and the cost compounds, one step later the whole composition unwinds.
+/// Getting the comparison off by one would move the worst case.
+#[kani::proof]
+fn a_wait_succeeds_exactly_below_its_budget() {
+    let budget = any_edge();
+    let latency = any_edge();
+    let w = Expr::Leaf(any_wait(budget, 1));
+    if let Ok(o) = w.eval(latency, Unit::BusReads) {
+        assert_eq!(o.succeeded, latency < budget);
+    }
+}
+
+/// A wait never polls more than its budget, whatever the world does.
+#[kani::proof]
+fn a_wait_never_polls_past_its_budget() {
+    let budget = any_edge();
+    let latency = any_edge();
+    let w = Expr::Leaf(any_wait(budget, 1));
+    if let Ok(o) = w.eval(latency, Unit::BusReads) {
+        assert!(o.cost.interval().hi() <= budget);
+    }
 }
