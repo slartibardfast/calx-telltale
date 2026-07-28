@@ -47,6 +47,7 @@ pub mod limits;
 pub mod provenance;
 pub mod quantity;
 pub mod rate;
+pub mod register;
 pub mod schedule;
 pub mod source;
 
@@ -62,5 +63,6 @@ pub use limits::{Limit, LIMITS};
 pub use provenance::Provenance;
 pub use quantity::{Quantity, Refusal, Unit};
 pub use rate::{Base, NoBase, Rate};
+pub use register::{Fault, ParseError, Register};
 pub use schedule::{Analysis, Schedulability, Schedule};
 pub use source::{Delay, Rounding, Source, SourceId, Span, Validity};

@@ -11,6 +11,14 @@ repository = "https://github.com/slartibardfast/calx-telltale"
 
 # No dependencies. The verified core is arithmetic over integer intervals, and a
 # dependency here would be a dependency inside the proof boundary.
+[lib]
+name = "calx_telltale"
+path = "src/lib.rs"
+
+[[bin]]
+name = "calx-telltale"
+path = "src/main.rs"
+
 [dependencies]
 
 [profile.release]

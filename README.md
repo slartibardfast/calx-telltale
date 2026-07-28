@@ -256,6 +256,35 @@ instruction fetch, hangs that are not loops, unresolved indirect calls, windows
 that cross stack frames, correlated clock failure, nested budgets, release
 jitter, nesting within a priority level, and worst-case execution time itself.
 
+## Running it
+
+```
+calx-telltale check <register>   hold each declaration to its obligations
+calx-telltale limits             what this tool does not model
+```
+
+A register is line-oriented, on purpose. It is the artefact committed beside the
+image it describes, so it has to diff cleanly and review in a pull request, and
+a nested format would read better and diff worse. Diffing is the operation that
+happens most.
+
+```
+source id=0 hz=105000000 per=88 width=32 ppm=100 from=extracted
+wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 measure=post-decrement \
+     on-exhaustion=silently-continues from=extracted
+```
+
+Every value carries `from=`, so provenance enters at the point of declaration
+rather than being attached later. A tick count names the clock it was counted
+against, because one that named none would be a rate entering the model as a
+bare number. A `?` is a blank an adapter left for a human, and the tool reports
+it as a blank rather than as a missing field, since those call for different
+actions.
+
+Every run prints the limits, and the exit code separates the three outcomes an
+agent needs apart: every declaration held, an obligation failed, or the register
+could not be read.
+
 ## Status
 
 The verified core is built: quantities, exact rates, the register base, the tree
