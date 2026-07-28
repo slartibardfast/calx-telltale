@@ -24,9 +24,14 @@ calx-telltale — a verified calculator for waits, interrupts-off windows, and t
 compositions built out of them.
 
 usage:
-  calx-telltale check <register> [--json]   hold each declaration to its obligations
-  calx-telltale limits [--json]             the failure classes this tool does not model
-  calx-telltale grammar                     the register format, for authoring one
+  calx-telltale check <register> [--json]     hold each declaration to its obligations
+  calx-telltale project <register> [--json]   worst-case cost of each composition
+  calx-telltale attain <register> [--json]    where each worst case is attained
+  calx-telltale deadline <register> [--json]  blackouts against declared deadlines
+  calx-telltale overrun <register> [--json]   blackouts against buffer depths
+  calx-telltale diff <a> <b> [--json]         what moved between two registers
+  calx-telltale limits [--json]               the failure classes this tool does not model
+  calx-telltale grammar                       the register format, for authoring one
   calx-telltale version [--json]
   calx-telltale help
 
@@ -671,4 +676,39 @@ fn unreadable(path: &str, why: &str, json: bool) -> i32 {
         eprintln!("{path}: {why}");
     }
     code::UNREADABLE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::USAGE;
+
+    /// Every verb the dispatch answers to is named in the help.
+    ///
+    /// The verbs are read out of this file rather than restated in a list,
+    /// because a restated list would need updating by whoever forgot to update
+    /// the help. Five verbs shipped unreachable from `help` before this check
+    /// existed, and an agent holding only the binary could not have found them.
+    #[test]
+    fn every_verb_is_named_in_the_help() {
+        let verbs: Vec<&str> = include_str!("main.rs")
+            .split("Some(\"")
+            .skip(1)
+            .map(|arm| {
+                arm.split_once('"')
+                    .expect("a dispatch arm opens with a quoted name")
+                    .0
+            })
+            .collect();
+
+        assert!(
+            verbs.len() >= 10,
+            "the dispatch arms were not found; this check is reading the wrong thing"
+        );
+        for verb in verbs {
+            assert!(
+                USAGE.contains(&format!("calx-telltale {verb}")),
+                "`{verb}` is dispatched and absent from the help"
+            );
+        }
+    }
 }
