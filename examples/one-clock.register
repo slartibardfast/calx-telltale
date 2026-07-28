@@ -14,3 +14,13 @@ wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 measure=post-decrement on
 # A budget wider than the counter holding it.
 # No citation: this budget was guessed rather than read, so there is no site.
 wait id=2 budget=0x20000 cost=1 unit=bus-reads counter=u16 measure=pre-decrement on-exhaustion=asserts from=assumed
+
+# A retry loop over a guard and a body. The worst case is not at either extreme:
+# a guard that fails unwinds cheaply, and a guard that answers on its last
+# permitted attempt costs almost its budget and lets everything above it run.
+compose id=0 form=short-circuit guard=w0 then=w0
+compose id=1 form=repeat body=c0 times=50
+
+# The window interrupts are off for, and a line that arrives during it.
+window id=0 cost=4000 unit=bus-reads from=derived
+interrupt id=0 priority=0 cost=100 unit=bus-reads every=1000 deadline=5000 depth=4 on-drop=lost-and-logged from=extracted file=drivers/net.c symbol=net_isr

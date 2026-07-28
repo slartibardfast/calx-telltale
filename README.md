@@ -174,14 +174,14 @@ Following the `calx-mill` idiom.
 |---|---|
 | `census` | *(planned)* inventory waits and windows from an ELF; emit a skeleton register |
 | `check` | run the proof obligations against a register |
-| `project` | *(planned)* worst-case cost of each declared composition |
-| `attain` | *(planned)* report the witness: where each maximum occurs |
-| `deadline` | *(planned)* compare projections against declared deadlines, by armed interval |
-| `overrun` | *(planned)* whether a blackout delivers more arrivals than a buffer holds |
-| `diff` | *(planned)* register against register, for regression across builds |
+| `project` | worst-case cost of each declared composition |
+| `attain` | report the witness: where each maximum occurs |
+| `deadline` | compare projections against declared deadlines, by armed interval |
+| `overrun` | whether a blackout delivers more arrivals than a buffer holds |
+| `diff` | register against register, for regression across builds |
 
-The verbs marked *(planned)* compute correctly in the library and are not yet
-reachable from the command line. The register itself is a hand-authorable, diffable file declaring waits,
+`census` is the one verb still to come, and the milestone that builds it waits
+on a decision rather than on effort. The register itself is a hand-authorable, diffable file declaring waits,
 windows, deadlines, compositions and conversions. An ELF adapter emits a
 skeleton register with `Extracted` provenance and blanks wherever a human must
 still supply a budget or a measure.
@@ -260,12 +260,22 @@ jitter, nesting within a priority level, and worst-case execution time itself.
 ## Running it
 
 ```
-calx-telltale check <register> [--json]   hold each declaration to its obligations
-calx-telltale limits [--json]             the failure classes it does not model
-calx-telltale grammar                     the register format, for authoring one
+calx-telltale check <register> [--json]     hold each declaration to its obligations
+calx-telltale project <register> [--json]   worst-case cost of each composition
+calx-telltale attain <register> [--json]    where each worst case is attained
+calx-telltale deadline <register> [--json]  blackouts against declared deadlines
+calx-telltale overrun <register> [--json]   blackouts against buffer depths
+calx-telltale diff <a> <b> [--json]         what moved between two registers
+calx-telltale limits [--json]               the failure classes it does not model
+calx-telltale grammar                       the register format, for authoring one
 calx-telltale version [--json]
 calx-telltale help
 ```
+
+`deadline` and `overrun` are worth running together. On the worked example they
+disagree about the same window: the blackout sits inside the declared deadline
+and still delivers more arrivals than the buffer holds. That disagreement is the
+reason the second verdict exists.
 
 **The tool describes itself.** An agent holding only the binary can reach the
 commands, the exit codes, the obligations checked, the provenance ordering and

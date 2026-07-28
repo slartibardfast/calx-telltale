@@ -9,7 +9,8 @@
 //! The parser takes no dependency, for the same reason the rest of the crate
 //! takes none: a format this small is not worth widening the surface for.
 
-use crate::expr::{Counter, Exhaustion, Measure, Wait, WaitId};
+use crate::expr::{Counter, Exhaustion, Expr, Measure, Wait, WaitId};
+use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Unit};
@@ -38,6 +39,9 @@ pub enum Fault {
     /// A tick or cycle count that names no declared clock, which would put a
     /// rate into the model as a bare number.
     UnnamedClock,
+    /// An operand naming a declaration this register has not made yet. A
+    /// composition reads top down, so what it refers to comes first.
+    UnknownOperand(&'static str),
 }
 
 impl core::fmt::Display for ParseError {
@@ -51,6 +55,10 @@ impl core::fmt::Display for ParseError {
             Fault::UnnamedClock => {
                 write!(f, "a tick count must name the clock it was counted against")
             }
+            Fault::UnknownOperand(k) => write!(
+                f,
+                "{k} names a declaration this register has not made yet; a composition reads top down"
+            ),
         }
     }
 }
@@ -100,6 +108,11 @@ pub struct Register {
     pub waits: Vec<Wait>,
     /// One per wait, in the same order.
     pub wait_citations: Vec<Citation>,
+    /// Compositions, each with the identifier it was declared under.
+    pub compositions: Vec<(u16, Expr)>,
+    pub interrupts: Vec<Interrupt>,
+    /// Blackout windows: spans where interrupts are off.
+    pub windows: Vec<(u16, Quantity)>,
 }
 
 impl Register {
@@ -270,6 +283,101 @@ impl Register {
                             provenance(&fs).map_err(at)?,
                         ),
                         on_exhaustion,
+                    });
+                }
+                "window" => {
+                    let id = number(&fs, "id").map_err(at)?;
+                    let cost = number(&fs, "cost").map_err(at)?;
+                    let u = unit(&fs, &reg.sources).map_err(at)?;
+                    reg.windows.push((
+                        u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?,
+                        Quantity::new(Interval::point(cost), u, provenance(&fs).map_err(at)?),
+                    ));
+                }
+                "compose" => {
+                    let id = number(&fs, "id").map_err(at)?;
+                    let form = get(&fs, "form").map_err(at)?;
+                    // An operand names a wait as `wN` or an earlier composition
+                    // as `cN`. Resolution is top down, so a reference always
+                    // points at something already declared.
+                    let resolve = |name: &str| -> Option<Expr> {
+                        let (kind, n) = name.split_at(1);
+                        let n: u16 = n.parse().ok()?;
+                        match kind {
+                            "w" => reg
+                                .waits
+                                .iter()
+                                .find(|w| w.id == WaitId(n))
+                                .map(|w| Expr::Leaf(*w)),
+                            "c" => reg
+                                .compositions
+                                .iter()
+                                .find(|(cid, _)| *cid == n)
+                                .map(|(_, e)| e.clone()),
+                            _ => None,
+                        }
+                    };
+                    let list = |key: &'static str| -> Result<Vec<Expr>, Fault> {
+                        get(&fs, key)?
+                            .split(',')
+                            .map(|n| resolve(n).ok_or(Fault::UnknownOperand(key)))
+                            .collect()
+                    };
+                    let expr = match form {
+                        "seq" => Expr::Seq(list("of").map_err(at)?),
+                        "alt" => Expr::Alt(list("of").map_err(at)?),
+                        "repeat" => Expr::Repeat {
+                            body: Box::new(
+                                resolve(get(&fs, "body").map_err(at)?)
+                                    .ok_or(Fault::UnknownOperand("body"))
+                                    .map_err(at)?,
+                            ),
+                            times: number(&fs, "times").map_err(at)?,
+                        },
+                        "short-circuit" => Expr::ShortCircuit {
+                            guard: Box::new(
+                                resolve(get(&fs, "guard").map_err(at)?)
+                                    .ok_or(Fault::UnknownOperand("guard"))
+                                    .map_err(at)?,
+                            ),
+                            then: Box::new(
+                                resolve(get(&fs, "then").map_err(at)?)
+                                    .ok_or(Fault::UnknownOperand("then"))
+                                    .map_err(at)?,
+                            ),
+                        },
+                        _ => return Err(at(Fault::Malformed("form"))),
+                    };
+                    reg.compositions.push((
+                        u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?,
+                        expr,
+                    ));
+                }
+                "interrupt" => {
+                    let id = number(&fs, "id").map_err(at)?;
+                    let u = unit(&fs, &reg.sources).map_err(at)?;
+                    let p = provenance(&fs).map_err(at)?;
+                    let q = |v: Count| Quantity::new(Interval::point(v), u, p);
+                    let deadline = match number(&fs, "deadline") {
+                        Ok(v) => Some(q(v)),
+                        Err(Fault::Missing(_)) => None,
+                        Err(e) => return Err(at(e)),
+                    };
+                    reg.interrupts.push(Interrupt {
+                        id: InterruptId(u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?),
+                        arrival: Arrival::MinInterarrival(q(number(&fs, "every").map_err(at)?)),
+                        cost: q(number(&fs, "cost").map_err(at)?),
+                        priority: u8::try_from(number(&fs, "priority").map_err(at)?)
+                            .map_err(|_| at(Fault::Malformed("priority")))?,
+                        deadline,
+                        depth: u32::try_from(number(&fs, "depth").map_err(at)?)
+                            .map_err(|_| at(Fault::Malformed("depth")))?,
+                        on_drop: match get(&fs, "on-drop").map_err(at)? {
+                            "lost-silently" => Consequence::LostSilently,
+                            "lost-and-logged" => Consequence::LostAndLogged,
+                            "retried" => Consequence::Retried,
+                            _ => return Err(at(Fault::Malformed("on-drop"))),
+                        },
                     });
                 }
                 _ => return Err(at(Fault::Unrecognised)),

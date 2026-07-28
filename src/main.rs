@@ -9,8 +9,10 @@
 //! commands, the exit codes, and the register grammar without reading anything
 //! else, because a surface an agent cannot discover is one it will guess at.
 
-use calx_telltale::expr::{CounterFit, Termination, Wait};
+use calx_telltale::expr::{CounterFit, Expr, Termination, Wait};
+use calx_telltale::interrupt::Verdict;
 use calx_telltale::limits::LIMITS;
+use calx_telltale::quantity::Unit;
 use calx_telltale::register::{Citation, Register};
 use calx_telltale::Provenance;
 
@@ -136,12 +138,29 @@ fn main() -> std::process::ExitCode {
             }
             code::HELD
         }
+        Some("project") => match positional.get(1) {
+            Some(path) => projection(path, json, false),
+            None => want("project", "a register"),
+        },
+        Some("attain") => match positional.get(1) {
+            Some(path) => projection(path, json, true),
+            None => want("attain", "a register"),
+        },
+        Some("deadline") => match positional.get(1) {
+            Some(path) => interrupts(path, json, false),
+            None => want("deadline", "a register"),
+        },
+        Some("overrun") => match positional.get(1) {
+            Some(path) => interrupts(path, json, true),
+            None => want("overrun", "a register"),
+        },
+        Some("diff") => match (positional.get(1), positional.get(2)) {
+            (Some(a), Some(b)) => diff(a, b, json),
+            _ => want("diff", "two registers"),
+        },
         Some("check") => match positional.get(1) {
             Some(path) => check(path, json),
-            None => {
-                eprintln!("check needs a register to read\n\n{USAGE}");
-                code::UNREADABLE
-            }
+            None => want("check", "a register"),
         },
         Some(other) => {
             eprintln!("no such command: {other}\n\n{USAGE}");
@@ -149,6 +168,11 @@ fn main() -> std::process::ExitCode {
         }
     };
     std::process::ExitCode::from(u8::try_from(status).unwrap_or(2))
+}
+
+fn want(verb: &str, what: &str) -> i32 {
+    eprintln!("{verb} needs {what} to read\n\n{USAGE}");
+    code::UNREADABLE
 }
 
 /// JSON string escaping, which is all the encoding this crate needs and less
@@ -260,6 +284,234 @@ fn findings_for(w: &Wait, citation: &Citation) -> Vec<Finding> {
     });
 
     out
+}
+
+/// The unit a composition counts in, taken from the first wait inside it. A
+/// composition mixing units is refused by the arithmetic rather than here.
+fn unit_of(e: &Expr) -> Option<Unit> {
+    match e {
+        Expr::Leaf(w) => Some(w.cost_per_iter.unit()),
+        Expr::Seq(parts) | Expr::Alt(parts) => parts.iter().find_map(unit_of),
+        Expr::Repeat { body, .. } => unit_of(body),
+        Expr::ShortCircuit { guard, then } => unit_of(guard).or_else(|| unit_of(then)),
+    }
+}
+
+fn read(path: &str, json: bool) -> Result<Register, i32> {
+    let text = std::fs::read_to_string(path).map_err(|e| unreadable(path, &e.to_string(), json))?;
+    Register::parse(&text).map_err(|e| unreadable(path, &e.to_string(), json))
+}
+
+/// `project` and `attain` read the same search and report different halves of
+/// it, so they share one walk.
+fn projection(path: &str, json: bool, witness: bool) -> i32 {
+    let register = match read(path, json) {
+        Ok(r) => r,
+        Err(c) => return c,
+    };
+    let mut rows: Vec<String> = Vec::new();
+    let mut human: Vec<String> = Vec::new();
+    for (id, expr) in &register.compositions {
+        let Some(u) = unit_of(expr) else {
+            human.push(format!(
+                "  composition {id}: empty, so there is nothing to price"
+            ));
+            rows.push(format!("{{\"composition\":{id},\"verdict\":\"empty\"}}"));
+            continue;
+        };
+        match expr.attain(u) {
+            Err(e) => {
+                human.push(format!("  composition {id}: refused, {e:?}"));
+                rows.push(format!(
+                    "{{\"composition\":{id},\"verdict\":\"refused\",\"says\":\"{}\"}}",
+                    esc(&format!("{e:?}"))
+                ));
+            }
+            Ok(a) => {
+                let cost = a.cost.interval().hi();
+                let prov = a.cost.provenance().as_str();
+                if witness {
+                    human.push(format!(
+                        "  composition {id} [{prov}] worst case {cost}, attained at latency {}{}",
+                        a.witness,
+                        if a.interior {
+                            " (interior: a sweep of the extremes would have missed it)"
+                        } else {
+                            " (at the boundary)"
+                        }
+                    ));
+                } else {
+                    human.push(format!("  composition {id} [{prov}] worst case {cost}"));
+                }
+                rows.push(format!(
+                    "{{\"composition\":{id},\"verdict\":\"priced\",\"cost\":\"{cost}\",\"provenance\":\"{prov}\",\"witness\":\"{}\",\"interior\":{}}}",
+                    a.witness, a.interior
+                ));
+            }
+        }
+    }
+    if json {
+        println!(
+            "{{\"tool\":\"{NAME}\",\"version\":\"{VERSION}\",\"register\":\"{}\",\"verb\":\"{}\",\"compositions\":[{}],\"limits\":{}}}",
+            esc(path),
+            if witness { "attain" } else { "project" },
+            rows.join(","),
+            limits_json()
+        );
+    } else {
+        println!("register {path}");
+        if human.is_empty() {
+            println!("  no compositions declared");
+        }
+        for l in &human {
+            println!("{l}");
+        }
+        print_limits();
+    }
+    code::HELD
+}
+
+/// `deadline` and `overrun` ask different questions of the same pairing, so
+/// they share one walk too.
+fn interrupts(path: &str, json: bool, overrun: bool) -> i32 {
+    let register = match read(path, json) {
+        Ok(r) => r,
+        Err(c) => return c,
+    };
+    let mut rows: Vec<String> = Vec::new();
+    let mut human: Vec<String> = Vec::new();
+    let mut missed = 0usize;
+    let mut withheld = 0usize;
+
+    for irq in &register.interrupts {
+        for (wid, window) in &register.windows {
+            let j = if overrun {
+                irq.overrun(*window)
+            } else {
+                irq.latency(*window)
+            };
+            let (verdict, says) = match j.verdict {
+                Verdict::Met => ("met", "the bound holds".to_string()),
+                Verdict::Missed => {
+                    missed += 1;
+                    ("missed", "the bound can be breached".to_string())
+                }
+                Verdict::Unanswerable(m) => {
+                    withheld += 1;
+                    ("withheld", format!("{m:?}"))
+                }
+            };
+            let measured = j
+                .measured
+                .map(|q| q.interval().hi().to_string())
+                .unwrap_or_default();
+            human.push(format!(
+                "  interrupt {} against window {wid} [{}] {verdict}: {says}{}",
+                irq.id.0,
+                j.provenance.as_str(),
+                if measured.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({measured})")
+                }
+            ));
+            rows.push(format!(
+                "{{\"interrupt\":{},\"window\":{wid},\"verdict\":\"{verdict}\",\"provenance\":\"{}\",\"measured\":\"{measured}\",\"says\":\"{}\"}}",
+                irq.id.0,
+                j.provenance.as_str(),
+                esc(&says)
+            ));
+        }
+    }
+    let status = if missed == 0 {
+        code::HELD
+    } else {
+        code::FAILED
+    };
+    if json {
+        println!(
+            "{{\"tool\":\"{NAME}\",\"version\":\"{VERSION}\",\"register\":\"{}\",\"verb\":\"{}\",\"verdicts\":[{}],\"missed\":{missed},\"withheld\":{withheld},\"exit\":{status},\"limits\":{}}}",
+            esc(path),
+            if overrun { "overrun" } else { "deadline" },
+            rows.join(","),
+            limits_json()
+        );
+    } else {
+        println!("register {path}");
+        if human.is_empty() {
+            println!("  no interrupt and window pair declared");
+        }
+        for l in &human {
+            println!("{l}");
+        }
+        // A withheld verdict is not a pass, so the count is stated even when
+        // nothing was missed.
+        println!("  {missed} missed, {withheld} withheld");
+        print_limits();
+    }
+    status
+}
+
+/// `diff` reports what moved between two registers, so a reviewer sees the
+/// change rather than the state.
+fn diff(a_path: &str, b_path: &str, json: bool) -> i32 {
+    let (a, b) = match (read(a_path, json), read(b_path, json)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(c), _) | (_, Err(c)) => return c,
+    };
+    let mut rows: Vec<String> = Vec::new();
+    let mut human: Vec<String> = Vec::new();
+    for wa in &a.waits {
+        match b.waits.iter().find(|w| w.id == wa.id) {
+            None => {
+                human.push(format!("  wait {} removed", wa.id.0));
+                rows.push(format!("{{\"wait\":{},\"change\":\"removed\"}}", wa.id.0));
+            }
+            Some(wb) => {
+                if wa.budget != wb.budget {
+                    human.push(format!(
+                        "  wait {} budget moved, {} to {}",
+                        wa.id.0, wa.budget, wb.budget
+                    ));
+                    rows.push(format!(
+                        "{{\"wait\":{},\"change\":\"budget\",\"was\":\"{}\",\"now\":\"{}\"}}",
+                        wa.id.0, wa.budget, wb.budget
+                    ));
+                }
+                if wa.measure != wb.measure {
+                    human.push(format!("  wait {} measure changed", wa.id.0));
+                    rows.push(format!("{{\"wait\":{},\"change\":\"measure\"}}", wa.id.0));
+                }
+                if wa.counter != wb.counter {
+                    human.push(format!("  wait {} counter width changed", wa.id.0));
+                    rows.push(format!("{{\"wait\":{},\"change\":\"counter\"}}", wa.id.0));
+                }
+            }
+        }
+    }
+    for wb in &b.waits {
+        if !a.waits.iter().any(|w| w.id == wb.id) {
+            human.push(format!("  wait {} added", wb.id.0));
+            rows.push(format!("{{\"wait\":{},\"change\":\"added\"}}", wb.id.0));
+        }
+    }
+    if json {
+        println!(
+            "{{\"tool\":\"{NAME}\",\"version\":\"{VERSION}\",\"from\":\"{}\",\"to\":\"{}\",\"changes\":[{}]}}",
+            esc(a_path),
+            esc(b_path),
+            rows.join(",")
+        );
+    } else {
+        println!("{a_path} -> {b_path}");
+        if human.is_empty() {
+            println!("  no declaration moved");
+        }
+        for l in &human {
+            println!("{l}");
+        }
+    }
+    code::HELD
 }
 
 fn check(path: &str, json: bool) -> i32 {
