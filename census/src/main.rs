@@ -11,15 +11,28 @@
 //! matters more than the omission does.
 
 mod elf;
+mod listing;
 
 use elf::{encoding, functions, NotAnImage};
+use listing::{back_edges, NotAListing};
 
 const USAGE: &str = "\
 calx-telltale-census — draft a register from an image
 
 usage:
+  calx-telltale-census loops <listing>          draft a register from a disassembly listing
   calx-telltale-census draft <image> [--min-size <n>]
+                                                list candidate functions from an image
   calx-telltale-census help
+
+`loops` is the one that finds waits. It reads a listing produced by a toolchain
+disassembler, takes instruction boundaries from its address column, and reports
+the backward branches inside each function. Produce one with, for example:
+
+  <target>-objdump -d firmware.elf > firmware.lst
+
+`draft` sees only function symbols, so what it offers are candidates rather than
+waits, and it says so.
 
 The draft goes to standard output. Every value it can read carries `extracted`
 provenance and a citation; everything a human must decide is written `?`.
@@ -33,6 +46,13 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let positional: Vec<&str> = args.iter().map(String::as_str).collect();
     let status = match positional.first().copied() {
+        Some("loops") => match positional.get(1) {
+            Some(path) => loops(path),
+            None => {
+                eprintln!("loops needs a listing to read\n\n{USAGE}");
+                2
+            }
+        },
         Some("draft") => match positional.get(1) {
             Some(path) => {
                 let min = positional
@@ -58,6 +78,67 @@ fn main() -> std::process::ExitCode {
         }
     };
     std::process::ExitCode::from(status)
+}
+
+fn loops(path: &str) -> u8 {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return 2;
+        }
+    };
+    let (arch, edges) = match back_edges(&text) {
+        Ok(v) => v,
+        Err(NotAListing::NoFormatLine) => {
+            eprintln!("{path}: no file-format line, so this is not a disassembly listing");
+            return 2;
+        }
+        Err(NotAListing::UnknownArchitecture(a)) => {
+            // Named rather than guessed at. A false loop is worse than a
+            // missing one, because it is a declaration a reader will act on.
+            eprintln!("{path}: no branch set for {a}; this adapter cannot read its loops");
+            return 2;
+        }
+        Err(NotAListing::Empty) => {
+            eprintln!("{path}: a listing with no instructions in it");
+            return 2;
+        }
+    };
+
+    println!("# Drafted from {path} by calx-telltale-census.");
+    println!("#");
+    println!("# Architecture: {arch}, read from the listing's own header.");
+    println!("#");
+    println!("# Instruction boundaries come from the listing's address column, so they were");
+    println!("# found by the toolchain's decoder rather than by this adapter. That is the");
+    println!("# whole reason this route works on encodings nothing here could decode. It is");
+    println!("# also the soundness of the result: a mis-lengthed instruction loses a back");
+    println!("# edge, and nothing downstream can tell. calx-telltale states that limit on");
+    println!("# every run.");
+    println!("#");
+    println!("# A back edge is a loop. Whether a loop is a wait, what budget it carries and");
+    println!("# how its counter moves are decisions for someone who can read the source, so");
+    println!("# each is left blank. The freeze set below is a lower bound: a loop with no");
+    println!("# backward branch, such as a zero-overhead loop, is not a back edge.");
+    println!("#");
+    println!("# {} loop(s) in {} function(s).", edges.len(), {
+        let mut names: Vec<&str> = edges.iter().map(|e| e.symbol.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        names.len()
+    });
+    println!();
+
+    for (i, e) in edges.iter().enumerate() {
+        println!("# branch at {:#x} back to {:#x}", e.at, e.target);
+        println!(
+            "wait id={i} budget=? cost=? unit=? counter=? measure=? on-exhaustion=? \
+             from=extracted file={path} symbol={}",
+            e.symbol
+        );
+    }
+    0
 }
 
 fn draft(path: &str, min_size: u64) -> u8 {

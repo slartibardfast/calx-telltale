@@ -269,7 +269,16 @@ verdict resting on it a guess.
 register is curated rather than authored from nothing.
 
 ```
-calx-telltale-census draft <image> [--min-size <n>]
+calx-telltale-census loops <listing>          find the loops, from a disassembly listing
+calx-telltale-census draft <image>            list candidate functions, from the image
+```
+
+`loops` is the one that finds waits. Produce a listing with the toolchain that
+built the firmware, and it reads the loops out of it:
+
+```
+<target>-objdump -d firmware.elf > firmware.lst
+calx-telltale-census loops firmware.lst > firmware.register
 ```
 
 It is a separate binary, and separate on purpose. The core's empty dependency
@@ -281,14 +290,27 @@ Every value it can read carries `extracted` provenance and a citation naming the
 file and symbol. Everything a human must decide is written `?`, which the core
 reports as a blank rather than as a missing field.
 
-**What it emits is a candidate list rather than a census, and it says so on
-every draft.** Finding the polling loops inside a function needs instruction
-boundaries, and on the parts this tool is aimed at that is the larger half of
-the work. The draft reports which encoding the image declares and how hard its
-boundaries are to find: strided where every instruction is one width, a fixed
-prefix where the first unit gives the length, and the operand form where the
-length depends on what the instruction does. That third tier is where writing a
-decoder stops being cheap.
+**Instruction boundaries come from the listing, not from here.** That is the
+whole reason this route works: the toolchain's decoder already solved the hard
+problem, and its address column is the answer. On the parts this tool is aimed
+at, boundary-finding is the larger half of the work and the encodings are the
+kind where a decoder stops being cheap, so delegating it is what makes the
+census possible at all rather than merely cheaper.
+
+It is also the soundness of the result, and the tool says so. A mis-lengthed
+instruction loses a back edge, and nothing downstream can tell. That is a
+declared limit and it is printed on every run.
+
+Branches are recognised from a per-architecture mnemonic set, and an
+architecture with no set is declined by name. Guessing from the shape of an
+operand would find loops in arithmetic that happens to reference an address, and
+a false loop is worse than a missing one: it is a declaration a reader will act
+on. The freeze set is a lower bound for the same reason a census is, since a
+loop with no backward branch is not a back edge.
+
+`draft` is the weaker half, kept for images with no listing to hand. It sees
+only function symbols, so what it offers are candidates rather than waits, and
+every line it emits is commented out to say so.
 
 ## What it does not model
 

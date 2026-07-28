@@ -1,11 +1,11 @@
 [package]
 name = "calx-telltale-census"
-# Zero, and deliberately. This crate has never been released: call/0011 keeps it
-# out of the canonical artifact, and call/0004 leaves open whether it is ever
-# released on its own. A number tracking the core would imply a lockstep it does
-# not have, and one left at an old release would read as drift. Zero says
-# neither, and needs no hand-synchronising at each release.
-version = "0.0.0"
+# It has a claim now. Zero said it had never been released and nothing had
+# decided that it would be; finding loops is the capability that was missing,
+# and call/0012 settled how. Still unpublished to any registry: it is a tool for
+# this project rather than a library, and it stays out of the canonical artifact
+# either way (call/0011).
+version = "0.1.0"
 publish = false
 edition = "2021"
 rust-version = "1.85"
