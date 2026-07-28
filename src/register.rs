@@ -55,11 +55,59 @@ impl core::fmt::Display for ParseError {
     }
 }
 
+/// Where a declaration was read from.
+///
+/// Held here rather than inside `Provenance`, because a citation is free text
+/// and [call/0006] keeps free text outside the proof boundary. `Provenance`
+/// says how a value was arrived at; this says where it was found, and a verdict
+/// wants both: one to know what the number is worth, the other to know what to
+/// open.
+///
+/// Optional, because a value that was swept or guessed has no symbol to name,
+/// and demanding one would push an author into inventing it.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Citation {
+    pub file: Option<String>,
+    pub symbol: Option<String>,
+}
+
+impl Citation {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.file.is_none() && self.symbol.is_none()
+    }
+
+    /// How a report names the site, or that there is none to name.
+    #[must_use]
+    pub fn site(&self) -> String {
+        match (&self.file, &self.symbol) {
+            (Some(f), Some(s)) => format!("{f}:{s}"),
+            (Some(f), None) => f.clone(),
+            (None, Some(s)) => s.clone(),
+            (None, None) => "no citation".to_string(),
+        }
+    }
+}
+
 /// A parsed register.
+///
+/// Citations sit alongside the declarations rather than inside them, so the
+/// verified types stay free of text and the reporting layer still has what it
+/// needs. The index of a citation matches the index of its declaration.
 #[derive(Clone, Debug, Default)]
 pub struct Register {
     pub sources: Vec<Source>,
     pub waits: Vec<Wait>,
+    /// One per wait, in the same order.
+    pub wait_citations: Vec<Citation>,
+}
+
+impl Register {
+    /// The citation for a wait, by its position.
+    #[must_use]
+    pub fn citation_for(&self, index: usize) -> Citation {
+        self.wait_citations.get(index).cloned().unwrap_or_default()
+    }
 }
 
 /// One `key = value` field from a line.
@@ -86,6 +134,19 @@ fn number(fs: &[(&str, &str)], key: &'static str) -> Result<Count, Fault> {
         None => (raw, 10),
     };
     Count::from_str_radix(&digits.replace('_', ""), radix).map_err(|_| Fault::Malformed(key))
+}
+
+fn citation(fs: &[(&str, &str)]) -> Citation {
+    let pick = |k: &str| {
+        fs.iter()
+            .find(|(key, _)| *key == k)
+            .map(|(_, v)| (*v).to_string())
+            .filter(|v| v != "?")
+    };
+    Citation {
+        file: pick("file"),
+        symbol: pick("symbol"),
+    }
 }
 
 fn provenance(fs: &[(&str, &str)]) -> Result<Provenance, Fault> {
@@ -197,6 +258,7 @@ impl Register {
                         "silently-continues" => Exhaustion::SilentlyContinues,
                         _ => return Err(at(Fault::Malformed("on-exhaustion"))),
                     };
+                    reg.wait_citations.push(citation(&fs));
                     reg.waits.push(Wait {
                         id: WaitId(u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?),
                         budget,
@@ -262,6 +324,38 @@ on-exhaustion=silently-continues from=extracted
         let r = Register::parse(SAMPLE).unwrap();
         assert_eq!(r.waits[0].termination(), Termination::WellFounded);
         assert_eq!(r.waits[1].termination(), Termination::Wraps);
+    }
+
+    #[test]
+    fn a_declaration_carries_where_it_was_read_from() {
+        let text = "wait id=0 budget=8192 cost=1 unit=bus-reads counter=u32 \
+                    measure=pre-decrement on-exhaustion=asserts from=extracted \
+                    file=drivers/bus.c symbol=bus_wait_idle";
+        let r = Register::parse(text).unwrap();
+        let c = r.citation_for(0);
+        assert_eq!(c.file.as_deref(), Some("drivers/bus.c"));
+        assert_eq!(c.symbol.as_deref(), Some("bus_wait_idle"));
+        assert_eq!(c.site(), "drivers/bus.c:bus_wait_idle");
+    }
+
+    #[test]
+    fn a_declaration_without_a_citation_still_parses() {
+        // A swept or guessed value has no symbol to name, so demanding one
+        // would push an author into inventing it.
+        let r = Register::parse(SAMPLE).unwrap();
+        assert!(r.citation_for(0).is_empty());
+        assert_eq!(r.citation_for(0).site(), "no citation");
+    }
+
+    #[test]
+    fn a_blank_citation_is_absent_rather_than_the_word_it_was_written_as() {
+        // A census emits `?` where it could not determine a site. That reaches
+        // the reader as absent rather than as a literal question mark.
+        let text = "wait id=0 budget=1 cost=1 unit=bus-reads counter=u32 \
+                    measure=pre-decrement on-exhaustion=asserts from=assumed \
+                    file=? symbol=?";
+        let r = Register::parse(text).unwrap();
+        assert!(r.citation_for(0).is_empty());
     }
 
     #[test]

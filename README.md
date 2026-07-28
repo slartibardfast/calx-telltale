@@ -293,7 +293,10 @@ wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 measure=post-decrement \
 ```
 
 Every value carries `from=`, so provenance enters at the point of declaration
-rather than being attached later. A tick count names the clock it was counted
+rather than being attached later, and may carry `file=` and `symbol=` naming
+where it was read from. Provenance says what a number is worth; the citation
+says what to open. A verdict reports both, because one that names only an
+identifier leaves the reader looking it up. A tick count names the clock it was counted
 against, because one that named none would be a rate entering the model as a
 bare number. A `?` is a blank an adapter left for a human, and the tool reports
 it as a blank rather than as a missing field, since those call for different

@@ -5,11 +5,12 @@
 source id=0 hz=105000000 per=88 width=32 ppm=100 from=extracted
 
 # A poll that gives up properly: the counter is decremented and then tested.
-wait id=0 budget=8192 cost=1 unit=bus-reads counter=u32 measure=pre-decrement on-exhaustion=reports-error from=derived
+wait id=0 budget=8192 cost=1 unit=bus-reads counter=u32 measure=pre-decrement on-exhaustion=reports-error from=derived file=drivers/bus.c symbol=bus_wait_idle
 
 # The same loop, tested before it moves. The stated bound of ten thousand is in
 # the declaration and nowhere in the behaviour.
-wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 measure=post-decrement on-exhaustion=silently-continues from=extracted
+wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 measure=post-decrement on-exhaustion=silently-continues from=extracted file=drivers/chan.c symbol=chan_teardown
 
 # A budget wider than the counter holding it.
+# No citation: this budget was guessed rather than read, so there is no site.
 wait id=2 budget=0x20000 cost=1 unit=bus-reads counter=u16 measure=pre-decrement on-exhaustion=asserts from=assumed

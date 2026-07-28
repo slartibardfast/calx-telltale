@@ -11,7 +11,7 @@
 
 use calx_telltale::expr::{CounterFit, Termination, Wait};
 use calx_telltale::limits::LIMITS;
-use calx_telltale::register::Register;
+use calx_telltale::register::{Citation, Register};
 use calx_telltale::Provenance;
 
 const NAME: &str = env!("CARGO_PKG_NAME");
@@ -63,6 +63,7 @@ Each line is a kind followed by `key=value` fields in any order.
   wait id=<n> budget=<n> cost=<n> unit=<unit> counter=<u8|u16|u32|u64>
        measure=<pre-decrement|post-decrement|increment [limit=<n>]>
        on-exhaustion=<reports-error|asserts|silently-continues> from=<provenance>
+       [file=<path>] [symbol=<name>]
 
     A polling wait. `measure` decides whether the loop terminates at all: a
     counter tested before it moves never sees zero, so it wraps and the declared
@@ -74,6 +75,10 @@ values:
                 A tick count must name the clock it was counted against, so a
                 rate can never enter the model as a bare number.
   <provenance>  derived | extracted | measured | assumed
+  file, symbol  where the declaration was read from. Optional, because a value
+                that was swept or guessed has no site to name, and demanding one
+                would push an author into inventing it. A verdict reports the
+                site so a reader can open it rather than look up an identifier.
   ?             a blank an adapter left for a human. Reported as a blank rather
                 than as a missing field, because one wants a decision and the
                 other wants a correction.
@@ -81,7 +86,8 @@ values:
 example:
   source id=0 hz=105000000 per=88 width=32 ppm=100 from=extracted
   wait id=1 budget=10000 cost=1 unit=ticks:0 counter=u32 \\
-       measure=post-decrement on-exhaustion=silently-continues from=extracted
+       measure=post-decrement on-exhaustion=silently-continues from=extracted \\
+       file=drivers/chan.c symbol=chan_teardown
 ";
 
 /// Exit codes an agent acts on without reading prose.
@@ -191,6 +197,9 @@ fn print_limits() {
 /// One obligation held against one declaration.
 struct Finding {
     wait: u16,
+    /// Where the declaration was read from, so a reader can open the site
+    /// rather than look up an identifier the register alone explains.
+    site: String,
     provenance: Provenance,
     obligation: &'static str,
     held: bool,
@@ -200,8 +209,9 @@ struct Finding {
     says: String,
 }
 
-fn findings_for(w: &Wait) -> Vec<Finding> {
+fn findings_for(w: &Wait, citation: &Citation) -> Vec<Finding> {
     let provenance = w.cost_per_iter.provenance();
+    let site = citation.site();
     let mut out = Vec::new();
 
     let (held, detail, says) = match w.termination() {
@@ -219,6 +229,7 @@ fn findings_for(w: &Wait) -> Vec<Finding> {
     };
     out.push(Finding {
         wait: w.id.0,
+        site: site.clone(),
         provenance,
         obligation: "termination",
         held,
@@ -240,6 +251,7 @@ fn findings_for(w: &Wait) -> Vec<Finding> {
     };
     out.push(Finding {
         wait: w.id.0,
+        site,
         provenance,
         obligation: "counter-fit",
         held,
@@ -260,7 +272,12 @@ fn check(path: &str, json: bool) -> i32 {
         Err(e) => return unreadable(path, &e.to_string(), json),
     };
 
-    let findings: Vec<Finding> = register.waits.iter().flat_map(findings_for).collect();
+    let findings: Vec<Finding> = register
+        .waits
+        .iter()
+        .enumerate()
+        .flat_map(|(i, w)| findings_for(w, &register.citation_for(i)))
+        .collect();
     let failed = findings.iter().filter(|f| !f.held).count();
     let standing = register.waits.iter().fold(Provenance::Derived, |acc, w| {
         acc.join(w.cost_per_iter.provenance())
@@ -276,8 +293,9 @@ fn check(path: &str, json: bool) -> i32 {
             .iter()
             .map(|f| {
                 format!(
-                    "{{\"wait\":{},\"obligation\":\"{}\",\"verdict\":\"{}\",\"provenance\":\"{}\",\"detail\":\"{}\",\"says\":\"{}\"}}",
+                    "{{\"wait\":{},\"site\":\"{}\",\"obligation\":\"{}\",\"verdict\":\"{}\",\"provenance\":\"{}\",\"detail\":\"{}\",\"says\":\"{}\"}}",
                     f.wait,
+                    esc(&f.site),
                     f.obligation,
                     if f.held { "held" } else { "failed" },
                     f.provenance.as_str(),
@@ -311,8 +329,9 @@ fn check(path: &str, json: bool) -> i32 {
     );
     for f in &findings {
         println!(
-            "  wait {} [{}] {}: {}",
+            "  wait {} ({}) [{}] {}: {}",
             f.wait,
+            f.site,
             f.provenance.as_str(),
             if f.held {
                 f.obligation.to_string()
