@@ -20,7 +20,7 @@
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Unit};
-use crate::source::SourceId;
+use crate::source::{SourceId, Span, Validity};
 use crate::Count;
 
 /// A declared interrupt, by index into the register's interrupt table.
@@ -75,6 +75,18 @@ pub enum Consequence {
     Retried,
 }
 
+/// A latency bound, and the span it is in force over.
+///
+/// Arming is first-class because a watchdog is typically enabled part-way
+/// through a boot. Everything before that point has no deadline at all, which
+/// is a different situation from having one and a worse one, and a tool that
+/// reported it as a pass would be saying the opposite of what is true.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Deadline {
+    pub budget: Quantity,
+    pub armed: Validity,
+}
+
 /// A declared interrupt.
 #[derive(Clone, Copy, Debug)]
 pub struct Interrupt {
@@ -88,9 +100,18 @@ pub struct Interrupt {
     /// Priority, numbered the way the hardware numbers it: a lower number
     /// preempts a higher one.
     pub priority: u8,
-    /// The latency this interrupt can absorb before it has missed. An interrupt
-    /// with none declared can still be judged on overrun.
-    pub deadline: Option<Quantity>,
+    /// The latency this interrupt can absorb before it has missed, and when
+    /// that bound is in force. An interrupt with none declared can still be
+    /// judged on overrun.
+    pub deadline: Option<Deadline>,
+    /// How late a release may be against its declared gap. A source that is
+    /// periodic in the long run can still bunch, and a burst delivers more
+    /// arrivals into a window than an even spacing would.
+    pub jitter: Option<Quantity>,
+    /// Whether the handler re-enables interrupts inside itself. One that does
+    /// can be preempted by its own priority level, which the flat model would
+    /// otherwise miss.
+    pub reenables: bool,
     /// How many arrivals can queue before one is lost.
     pub depth: u32,
     /// What a dropped arrival costs.
@@ -131,6 +152,10 @@ pub enum Verdict {
     /// The bound can be breached. A worst-case tool reports the breach as soon
     /// as one is reachable, rather than waiting for it to be certain.
     Missed,
+    /// No deadline is in force across the span under study. This is not a pass:
+    /// an unbounded stretch is worse than a bounded one, and reporting it as
+    /// met would say the opposite of what is true.
+    Unarmed,
     /// The comparison cannot be made, and this names what is missing.
     Unanswerable(Missing),
 }
@@ -139,6 +164,12 @@ impl Verdict {
     #[must_use]
     pub const fn is_answerable(self) -> bool {
         !matches!(self, Verdict::Unanswerable(_))
+    }
+
+    /// Whether this verdict is a clean pass. An unarmed span is not one.
+    #[must_use]
+    pub const fn is_met(self) -> bool {
+        matches!(self, Verdict::Met)
     }
 }
 
@@ -220,18 +251,27 @@ impl Interrupt {
     /// longest end of the blackout, so a deadline that can be breached is
     /// reported as breached.
     #[must_use]
-    pub fn latency(&self, blackout: Quantity) -> Judgement {
+    pub fn latency(&self, blackout: Quantity, over: Span) -> Judgement {
         let Some(deadline) = self.deadline else {
             return Judgement::withheld(Missing::NoDeadline, blackout.provenance());
         };
-        if blackout.unit() != deadline.unit() {
+        let bound = deadline.budget;
+        // A bound not in force across the whole span bounds nothing across it.
+        if !deadline.armed.covers(over) {
+            return Judgement {
+                verdict: Verdict::Unarmed,
+                provenance: blackout.provenance().join(bound.provenance()),
+                measured: Some(blackout),
+            };
+        }
+        if blackout.unit() != bound.unit() {
             return Judgement::withheld(
-                mismatch(blackout.unit(), deadline.unit()),
-                blackout.provenance().join(deadline.provenance()),
+                mismatch(blackout.unit(), bound.unit()),
+                blackout.provenance().join(bound.provenance()),
             );
         }
-        let provenance = blackout.provenance().join(deadline.provenance());
-        let verdict = if blackout.interval().hi() > deadline.interval().lo() {
+        let provenance = blackout.provenance().join(bound.provenance());
+        let verdict = if blackout.interval().hi() > bound.interval().lo() {
             Verdict::Missed
         } else {
             Verdict::Met
@@ -247,7 +287,21 @@ impl Interrupt {
     #[must_use]
     pub fn overrun(&self, blackout: Quantity) -> Judgement {
         let gap = self.arrival.shortest_gap();
-        match arrivals_during(blackout, gap) {
+        // Release jitter widens the window arrivals can bunch into: a source
+        // periodic in the long run still delivers a burst if a release is late.
+        let effective = match self.jitter {
+            None => blackout,
+            Some(j) => match blackout.checked_add(j) {
+                Ok(q) => q,
+                Err(_) => {
+                    return Judgement::withheld(
+                        Missing::Overflow,
+                        blackout.provenance().join(j.provenance()),
+                    )
+                }
+            },
+        };
+        match arrivals_during(effective, gap) {
             Err(missing) => {
                 Judgement::withheld(missing, blackout.provenance().join(gap.provenance()))
             }
@@ -283,7 +337,9 @@ impl Sweep {
         match j.verdict {
             Verdict::Met => self.met += 1,
             Verdict::Missed => self.missed += 1,
-            Verdict::Unanswerable(_) => self.withheld += 1,
+            // An unarmed span is counted with the withheld rather than with
+            // the passes, because nothing bounded it.
+            Verdict::Unarmed | Verdict::Unanswerable(_) => self.withheld += 1,
         }
     }
 
@@ -296,12 +352,17 @@ impl Sweep {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arrival, Consequence, Interrupt, InterruptId, Missing, Sweep, Verdict};
+    use super::{Arrival, Consequence, Deadline, Interrupt, InterruptId, Missing, Sweep, Verdict};
     use crate::interval::Interval;
     use crate::provenance::Provenance::{Assumed, Derived, Extracted};
     use crate::quantity::{Quantity, Unit};
-    use crate::source::SourceId;
+    use crate::source::{SourceId, Span, Validity};
     use crate::Count;
+
+    /// A span every always-armed deadline covers.
+    fn whole() -> Span {
+        Span::new(0, 0).unwrap()
+    }
 
     fn q(lo: Count, hi: Count, unit: Unit, p: crate::provenance::Provenance) -> Quantity {
         Quantity::new(Interval::new(lo, hi).unwrap(), unit, p)
@@ -315,7 +376,12 @@ mod tests {
             arrival: Arrival::MinInterarrival(q(1_000, 1_000, Unit::Base, Extracted)),
             cost: q(10, 10, Unit::Base, Extracted),
             priority: 0,
-            deadline: Some(q(5_000, 5_000, Unit::Base, Extracted)),
+            deadline: Some(Deadline {
+                budget: q(5_000, 5_000, Unit::Base, Extracted),
+                armed: Validity::Always,
+            }),
+            jitter: None,
+            reenables: false,
             depth,
             on_drop: Consequence::LostAndLogged,
         }
@@ -323,7 +389,7 @@ mod tests {
 
     #[test]
     fn a_blackout_inside_the_deadline_is_met() {
-        let j = line(4).latency(q(0, 4_000, Unit::Base, Derived));
+        let j = line(4).latency(q(0, 4_000, Unit::Base, Derived), whole());
         assert_eq!(j.verdict, Verdict::Met);
     }
 
@@ -331,7 +397,7 @@ mod tests {
     fn a_blackout_that_can_breach_is_reported_as_breaching() {
         // The worst case reaches past the deadline even though the best case
         // does not, and a worst-case tool reports the breach.
-        let j = line(4).latency(q(0, 5_001, Unit::Base, Derived));
+        let j = line(4).latency(q(0, 5_001, Unit::Base, Derived), whole());
         assert_eq!(j.verdict, Verdict::Missed);
     }
 
@@ -353,7 +419,7 @@ mod tests {
         let irq = line(4);
         assert_eq!(irq.overrun(blackout).measured.unwrap().interval().hi(), 5);
         assert_eq!(irq.overrun(blackout).verdict, Verdict::Missed);
-        assert_eq!(irq.latency(blackout).verdict, Verdict::Met);
+        assert_eq!(irq.latency(blackout, whole()).verdict, Verdict::Met);
     }
 
     #[test]
@@ -364,7 +430,7 @@ mod tests {
         let blackout = q(0, 8_000, Unit::Iterations, Derived);
         let irq = line(4);
         assert_eq!(
-            irq.latency(blackout).verdict,
+            irq.latency(blackout, whole()).verdict,
             Verdict::Unanswerable(Missing::NoPathToTime(Unit::Iterations))
         );
         assert_eq!(
@@ -379,7 +445,7 @@ mod tests {
         irq.deadline = None;
         let blackout = q(0, 500, Unit::Base, Derived);
         assert_eq!(
-            irq.latency(blackout).verdict,
+            irq.latency(blackout, whole()).verdict,
             Verdict::Unanswerable(Missing::NoDeadline)
         );
         assert_eq!(irq.overrun(blackout).verdict, Verdict::Met);
@@ -415,6 +481,8 @@ mod tests {
             cost: q(10, 10, Unit::Base, Extracted),
             priority: 1,
             deadline: None,
+            jitter: None,
+            reenables: false,
             depth: 2,
             on_drop: Consequence::Retried,
         };
@@ -426,12 +494,51 @@ mod tests {
     }
 
     #[test]
+    fn a_span_with_no_deadline_armed_is_not_a_pass() {
+        // A watchdog enabled part-way through a boot leaves everything before
+        // it unbounded. Reporting that as met would say the opposite of what
+        // is true, so it gets its own verdict.
+        let mut irq = line(4);
+        irq.deadline = Some(Deadline {
+            budget: q(5_000, 5_000, Unit::Base, Extracted),
+            armed: Validity::Over(Span::new(50, 1_000).unwrap()),
+        });
+        let tiny = q(0, 10, Unit::Base, Derived);
+        // Inside the armed span the bound is judged as usual.
+        assert_eq!(
+            irq.latency(tiny, Span::new(60, 100).unwrap()).verdict,
+            Verdict::Met
+        );
+        // Before it is armed, nothing bounds the window at all.
+        let before = irq.latency(tiny, Span::new(0, 40).unwrap());
+        assert_eq!(before.verdict, Verdict::Unarmed);
+        assert!(!before.verdict.is_met(), "an unarmed span is not a pass");
+    }
+
+    #[test]
+    fn jitter_lets_a_burst_land_that_even_spacing_would_not() {
+        // Three thousand ticks at one arrival per thousand admits four. Allow a
+        // release to be two thousand late and the same window admits six, which
+        // overruns a ring that the even case fits.
+        let even = line(5);
+        assert_eq!(
+            even.overrun(q(3_000, 3_000, Unit::Base, Derived)).verdict,
+            Verdict::Met
+        );
+        let mut bunched = line(5);
+        bunched.jitter = Some(q(2_000, 2_000, Unit::Base, Extracted));
+        let j = bunched.overrun(q(3_000, 3_000, Unit::Base, Derived));
+        assert_eq!(j.measured.unwrap().interval().hi(), 6);
+        assert_eq!(j.verdict, Verdict::Missed);
+    }
+
+    #[test]
     fn a_sweep_reports_what_it_withheld() {
         let irq = line(4);
         let mut sweep = Sweep::default();
-        sweep.record(irq.latency(q(0, 4_000, Unit::Base, Derived)));
-        sweep.record(irq.latency(q(0, 9_000, Unit::Base, Derived)));
-        sweep.record(irq.latency(q(0, 8_000, Unit::Iterations, Derived)));
+        sweep.record(irq.latency(q(0, 4_000, Unit::Base, Derived), whole()));
+        sweep.record(irq.latency(q(0, 9_000, Unit::Base, Derived), whole()));
+        sweep.record(irq.latency(q(0, 8_000, Unit::Iterations, Derived), whole()));
         assert_eq!((sweep.met, sweep.missed, sweep.withheld), (1, 1, 1));
         assert!(!sweep.is_complete(), "a withheld verdict is not a pass");
     }

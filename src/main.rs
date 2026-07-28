@@ -71,6 +71,30 @@ Each line is a kind followed by `key=value` fields in any order.
     counter tested before it moves never sees zero, so it wraps and the declared
     budget bounds nothing.
 
+  interrupt id=<n> priority=<n> cost=<n> unit=<unit> every=<n> depth=<n>
+            on-drop=<lost-silently|lost-and-logged|retried> from=<provenance>
+            [deadline=<n>] [armed=<from>..<to>] [jitter=<n>] [reenables=yes]
+
+    A declared interrupt. A lower priority number preempts a higher one, the way
+    the hardware numbers it. `armed` limits when the deadline is in force: a
+    window outside it is reported unarmed rather than passed, because an
+    unbounded stretch is worse than a bounded one. `jitter` is how late a
+    release may be, which lets a burst land that even spacing would not.
+    `reenables=yes` marks a handler its own priority level can preempt.
+
+  window id=<n> cost=<n> unit=<unit> from=<provenance> [at=<from>..<to>]
+
+    A span where interrupts are off. `at` places it on the timeline, so an
+    armed deadline can be judged against it.
+
+  compose id=<n> form=<seq|alt> of=<w0,c1,...>
+  compose id=<n> form=repeat body=<ref> times=<n>
+  compose id=<n> form=short-circuit guard=<ref> then=<ref>
+
+    A composition. An operand names a wait as `wN` or an earlier composition as
+    `cN`, and resolution runs top down, so a reference always points at
+    something already declared.
+
 values:
   <n>           decimal, or 0x-prefixed hex; `_` separators are ignored
   <unit>        iterations | bus-reads | base | nanos | ticks:<source id>
@@ -384,17 +408,25 @@ fn interrupts(path: &str, json: bool, overrun: bool) -> i32 {
     let mut withheld = 0usize;
 
     for irq in &register.interrupts {
-        for (wid, window) in &register.windows {
+        for (wid, window, span) in &register.windows {
             let j = if overrun {
                 irq.overrun(*window)
             } else {
-                irq.latency(*window)
+                irq.latency(*window, *span)
             };
             let (verdict, says) = match j.verdict {
                 Verdict::Met => ("met", "the bound holds".to_string()),
                 Verdict::Missed => {
                     missed += 1;
                     ("missed", "the bound can be breached".to_string())
+                }
+                Verdict::Unarmed => {
+                    withheld += 1;
+                    (
+                        "unarmed",
+                        "no deadline is in force across this span, so nothing bounds it"
+                            .to_string(),
+                    )
                 }
                 Verdict::Unanswerable(m) => {
                     withheld += 1;

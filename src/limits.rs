@@ -52,16 +52,6 @@ pub const LIMITS: &[Limit] = &[
                   per-item bound holds while a walk over items has none",
     },
     Limit {
-        name: "release jitter",
-        because: "an arrival declares a shortest gap and no jitter, so a sporadically periodic \
-                  source is modelled as its own worst case rather than as a burst",
-    },
-    Limit {
-        name: "nesting within a priority",
-        because: "handlers at one priority level are not modelled as preempting one another, so \
-                  a design that re-enables interrupts inside a handler is outside the analysis",
-    },
-    Limit {
         name: "worst-case execution time",
         because: "a handler cost is declared rather than derived; this tool composes the number \
                   it is given and carries its provenance, and it does not compute one",
@@ -81,7 +71,7 @@ mod tests {
 
     #[test]
     fn every_limit_says_why() {
-        assert!(count() >= 9);
+        assert!(count() >= 7);
         for l in LIMITS {
             assert!(!l.name.is_empty());
             assert!(

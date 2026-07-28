@@ -160,7 +160,7 @@ impl Schedule {
             }
         }
 
-        let Some(deadline) = irq.deadline else {
+        let Some(deadline) = irq.deadline.map(|d| d.budget) else {
             return Analysis {
                 verdict: Schedulability::Unanswerable(Missing::NoDeadline),
                 provenance: prov,
@@ -178,7 +178,12 @@ impl Schedule {
         let higher: Vec<&Interrupt> = self
             .interrupts
             .iter()
-            .filter(|j| j.preempts(irq) && j.id != irq.id)
+            // A handler that re-enables interrupts inside itself can be
+            // preempted by its own level, so the interference set widens to
+            // include equal priorities for such a handler.
+            .filter(|j| {
+                j.id != irq.id && (j.preempts(irq) || (irq.reenables && j.priority == irq.priority))
+            })
             .collect();
         for j in &higher {
             if j.cost.unit() != unit || j.arrival.shortest_gap().unit() != unit {
@@ -294,10 +299,11 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::{Schedulability, Schedule, FULLY_UTILISED};
-    use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId, Missing};
+    use crate::interrupt::{Arrival, Consequence, Deadline, Interrupt, InterruptId, Missing};
     use crate::interval::Interval;
     use crate::provenance::Provenance::{Assumed, Derived, Extracted};
     use crate::quantity::{Quantity, Unit};
+    use crate::source::Validity;
     use crate::Count;
 
     fn q(v: Count, unit: Unit, p: crate::provenance::Provenance) -> Quantity {
@@ -311,7 +317,12 @@ mod tests {
             arrival: Arrival::MinInterarrival(q(period, Unit::Base, Extracted)),
             cost: q(cost, Unit::Base, Extracted),
             priority,
-            deadline: Some(q(deadline, Unit::Base, Extracted)),
+            deadline: Some(Deadline {
+                budget: q(deadline, Unit::Base, Extracted),
+                armed: Validity::Always,
+            }),
+            jitter: None,
+            reenables: false,
             depth: 4,
             on_drop: Consequence::LostAndLogged,
         }
@@ -422,6 +433,32 @@ mod tests {
             Schedulability::Unanswerable(Missing::NoPathToTime(Unit::Iterations)),
             "the honest reason is that a loop count is not a duration"
         );
+    }
+
+    #[test]
+    fn a_handler_that_reenables_is_preempted_by_its_own_level() {
+        // Two interrupts at the same priority. Flat, neither interferes with
+        // the other. Where one re-enables interrupts inside itself, its own
+        // level reaches it, and the response time rises accordingly.
+        let mut target = irq(1, 3, 200, 1_000, 900);
+        let peer = irq(2, 3, 100, 1_000, 900);
+
+        let flat = Schedule::new(vec![target, peer]);
+        let a = flat.response_time(InterruptId(1), q(0, Unit::Base, Derived));
+        let flat_cost = match a.verdict {
+            Schedulability::Keeps { response, .. } => response.interval().hi(),
+            other => panic!("expected it to keep up, got {other:?}"),
+        };
+
+        target.reenables = true;
+        let nested = Schedule::new(vec![target, peer]);
+        let b = nested.response_time(InterruptId(1), q(0, Unit::Base, Derived));
+        let nested_cost = match b.verdict {
+            Schedulability::Keeps { response, .. } => response.interval().hi(),
+            other => panic!("expected it to keep up, got {other:?}"),
+        };
+        assert_eq!(flat_cost, 200, "its own cost alone");
+        assert_eq!(nested_cost, 300, "and one release of its own level");
     }
 
     #[test]

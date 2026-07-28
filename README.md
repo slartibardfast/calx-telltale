@@ -252,10 +252,16 @@ verdict resting on it a guess.
 ## What it does not model
 
 The exclusions are enumerated in the crate and stated on every run, because an
-exclusion that is not stated reads as coverage. They include execute-in-place
+exclusion that is not stated reads as coverage. They cover execute-in-place
 instruction fetch, hangs that are not loops, unresolved indirect calls, windows
-that cross stack frames, correlated clock failure, nested budgets, release
-jitter, nesting within a priority level, and worst-case execution time itself.
+that cross stack frames, correlated clock failure, nested budgets, and
+worst-case execution time itself.
+
+A deadline carries the span it is armed over, so a window outside it is reported
+unarmed rather than passed. An arrival may declare its release jitter, which
+lets a burst land that even spacing would not. A handler may declare that it
+re-enables interrupts, and its own priority level then interferes with it. Each
+of those was a stated limit before it was modelled.
 
 ## Running it
 

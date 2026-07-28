@@ -10,12 +10,12 @@
 //! takes none: a format this small is not worth widening the surface for.
 
 use crate::expr::{Counter, Exhaustion, Expr, Measure, Wait, WaitId};
-use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
+use crate::interrupt::{Arrival, Consequence, Deadline, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Unit};
 use crate::rate::Rate;
-use crate::source::{Origin, Source, SourceId, Validity};
+use crate::source::{Origin, Source, SourceId, Span, Validity};
 use crate::Count;
 
 /// Why a register could not be read.
@@ -112,7 +112,7 @@ pub struct Register {
     pub compositions: Vec<(u16, Expr)>,
     pub interrupts: Vec<Interrupt>,
     /// Blackout windows: spans where interrupts are off.
-    pub windows: Vec<(u16, Quantity)>,
+    pub windows: Vec<(u16, Quantity, Span)>,
 }
 
 impl Register {
@@ -289,9 +289,26 @@ impl Register {
                     let id = number(&fs, "id").map_err(at)?;
                     let cost = number(&fs, "cost").map_err(at)?;
                     let u = unit(&fs, &reg.sources).map_err(at)?;
+                    let span = match get(&fs, "at") {
+                        Err(Fault::Missing(_)) => Span::new(0, 0).expect("zero is a span"),
+                        Err(e) => return Err(at(e)),
+                        Ok(raw) => {
+                            let (from, to) = raw
+                                .split_once("..")
+                                .ok_or(Fault::Malformed("at"))
+                                .map_err(at)?;
+                            let parse = |v: &str| {
+                                v.parse::<Count>().map_err(|_| at(Fault::Malformed("at")))
+                            };
+                            Span::new(parse(from)?, parse(to)?)
+                                .ok_or(Fault::Malformed("at"))
+                                .map_err(at)?
+                        }
+                    };
                     reg.windows.push((
                         u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?,
                         Quantity::new(Interval::point(cost), u, provenance(&fs).map_err(at)?),
+                        span,
                     ));
                 }
                 "compose" => {
@@ -358,11 +375,41 @@ impl Register {
                     let u = unit(&fs, &reg.sources).map_err(at)?;
                     let p = provenance(&fs).map_err(at)?;
                     let q = |v: Count| Quantity::new(Interval::point(v), u, p);
+                    // `armed=<from>..<to>` limits when the bound is in force.
+                    // Absent, it is in force throughout.
+                    let armed = match get(&fs, "armed") {
+                        Err(Fault::Missing(_)) => Validity::Always,
+                        Err(e) => return Err(at(e)),
+                        Ok(raw) => {
+                            let (from, to) = raw
+                                .split_once("..")
+                                .ok_or(Fault::Malformed("armed"))
+                                .map_err(at)?;
+                            let parse = |v: &str| {
+                                v.parse::<Count>()
+                                    .map_err(|_| at(Fault::Malformed("armed")))
+                            };
+                            Validity::Over(
+                                Span::new(parse(from)?, parse(to)?)
+                                    .ok_or(Fault::Malformed("armed"))
+                                    .map_err(at)?,
+                            )
+                        }
+                    };
                     let deadline = match number(&fs, "deadline") {
+                        Ok(v) => Some(Deadline {
+                            budget: q(v),
+                            armed,
+                        }),
+                        Err(Fault::Missing(_)) => None,
+                        Err(e) => return Err(at(e)),
+                    };
+                    let jitter = match number(&fs, "jitter") {
                         Ok(v) => Some(q(v)),
                         Err(Fault::Missing(_)) => None,
                         Err(e) => return Err(at(e)),
                     };
+                    let reenables = matches!(get(&fs, "reenables"), Ok("yes"));
                     reg.interrupts.push(Interrupt {
                         id: InterruptId(u16::try_from(id).map_err(|_| at(Fault::Malformed("id")))?),
                         arrival: Arrival::MinInterarrival(q(number(&fs, "every").map_err(at)?)),
@@ -370,6 +417,8 @@ impl Register {
                         priority: u8::try_from(number(&fs, "priority").map_err(at)?)
                             .map_err(|_| at(Fault::Malformed("priority")))?,
                         deadline,
+                        jitter,
+                        reenables,
                         depth: u32::try_from(number(&fs, "depth").map_err(at)?)
                             .map_err(|_| at(Fault::Malformed("depth")))?,
                         on_drop: match get(&fs, "on-drop").map_err(at)? {
