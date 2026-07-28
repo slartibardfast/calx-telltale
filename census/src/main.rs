@@ -100,13 +100,19 @@ fn draft(path: &str, min_size: u64) -> u8 {
     println!("# width and a measure all have to be read from the source by someone who");
     println!("# can see it, and inventing them would be worse than leaving them blank.");
     println!("#");
-    println!("# These are candidates rather than waits. Finding the polling loops inside");
-    println!("# a function needs a disassembler, which this adapter does not have, so the");
-    println!("# set below is a starting point and not a census. Anything it misses is");
-    println!("# missing silently, which is why this line is here.");
+    println!("# Every line below is commented out, and that is the honest state of it.");
+    println!("# A wait is a polling loop. What this adapter can see is a function symbol,");
+    println!("# and a function is not a wait. Emitting these as declarations would claim a");
+    println!("# kind that has not been established, once per symbol, and hand back a file");
+    println!("# that has to be cut down before it can be read.");
+    println!("#");
+    println!("# So each is a candidate to uncomment once someone has looked and found a");
+    println!("# loop worth declaring. Finding those loops is what would make this a census,");
+    println!("# and it needs instruction boundaries this adapter does not yet compute.");
+    println!("# Anything it misses is missing silently, which is why this line is here.");
     println!("#");
     println!(
-        "# {} function symbol(s) read, {} at or above the size threshold.",
+        "# {} function symbol(s) read, {} candidate(s) at or above the size threshold.",
         found.len(),
         candidates.len()
     );
@@ -115,7 +121,7 @@ fn draft(path: &str, min_size: u64) -> u8 {
     for (i, f) in candidates.iter().enumerate() {
         println!("# {} bytes of code", f.size);
         println!(
-            "wait id={i} budget=? cost=? unit=? counter=? measure=? on-exhaustion=? \
+            "# wait id={i} budget=? cost=? unit=? counter=? measure=? on-exhaustion=? \
              from=extracted file={path} symbol={}",
             f.name
         );
