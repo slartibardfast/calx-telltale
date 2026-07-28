@@ -185,6 +185,24 @@ pub struct Outcome {
     pub succeeded: bool,
 }
 
+/// Whether a composition's cost can fall as the world gets slower.
+///
+/// It can, and that is the whole difficulty. A guard that fails stops the work
+/// above it, so the cost drops the moment the guard gives up, and the maximum
+/// sits below that point rather than at the end of the range.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shape {
+    /// Cost never falls as latency rises, so the worst case is at the top of
+    /// the domain and there is nothing to search for.
+    ///
+    /// Established structurally, resting on the leaf case, which is proved:
+    /// a wait polls `min(latency, budget)` times, and that never decreases.
+    Monotone,
+    /// Something stops early, so cost can fall and the maximum has to be
+    /// searched for.
+    EarlyExit,
+}
+
 /// The worst case, and the input that produces it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Attainment {
@@ -195,6 +213,10 @@ pub struct Attainment {
     /// Whether the cost rose all the way to the witness. Where it did not, the
     /// worst case is interior and a sweep of the extremes would have missed it.
     pub interior: bool,
+    /// How the answer was reached. Monotone means it was established rather
+    /// than searched for, which is worth reporting: a searched maximum is only
+    /// as good as the domain the search ran over.
+    pub shape: Shape,
 }
 
 impl Expr {
@@ -288,6 +310,28 @@ impl Expr {
         }
     }
 
+    /// Whether this composition's cost can fall as latency rises.
+    ///
+    /// Conservative in the safe direction: anything that might stop early is
+    /// reported as stopping early, so a claim of monotonicity is never made on
+    /// a composition that could break it. A sequence and a retry both stop
+    /// where a member fails, and a short circuit exists to.
+    #[must_use]
+    pub fn shape(&self) -> Shape {
+        match self {
+            Expr::Leaf(_) => Shape::Monotone,
+            Expr::Alt(arms) => {
+                // A maximum of non-decreasing costs is non-decreasing.
+                if arms.iter().all(|a| a.shape() == Shape::Monotone) {
+                    Shape::Monotone
+                } else {
+                    Shape::EarlyExit
+                }
+            }
+            Expr::Seq(_) | Expr::Repeat { .. } | Expr::ShortCircuit { .. } => Shape::EarlyExit,
+        }
+    }
+
     /// The largest budget anywhere in this composition, which bounds the
     /// latencies worth trying: past it, every wait has already given up.
     #[must_use]
@@ -310,6 +354,21 @@ impl Expr {
     /// even where the costs do not.
     pub fn attain(&self, unit: Unit) -> Result<Attainment, Refusal> {
         let ceiling = self.widest_budget();
+        let shape = self.shape();
+
+        // Where the cost cannot fall, the worst case is at the top of the
+        // domain by construction. Reporting that is worth more than searching
+        // for it: a searched maximum is only as good as the domain searched.
+        if shape == Shape::Monotone {
+            let top = ceiling.saturating_add(1);
+            return Ok(Attainment {
+                cost: self.eval(top, unit)?.cost,
+                witness: top,
+                interior: false,
+                shape,
+            });
+        }
+
         let mut best = self.eval(0, unit)?.cost;
         let mut witness: Count = 0;
         // One past the widest budget is the case where nothing ever answers.
@@ -324,6 +383,7 @@ impl Expr {
             cost: best,
             witness,
             interior: witness > 0 && witness <= ceiling,
+            shape,
         })
     }
 }
@@ -334,7 +394,7 @@ fn zero(unit: Unit) -> Quantity {
 
 #[cfg(test)]
 mod tests {
-    use super::{Counter, CounterFit, Exhaustion, Expr, Measure, Termination, Wait, WaitId};
+    use super::{Counter, CounterFit, Exhaustion, Expr, Measure, Shape, Termination, Wait, WaitId};
     use crate::interval::Interval;
     use crate::provenance::Provenance::{Assumed, Derived, Extracted};
     use crate::quantity::{Quantity, Unit};
@@ -525,6 +585,56 @@ mod tests {
             CounterFit::Fits { headroom } => assert_eq!(headroom, 65_535 - 0x2000),
             other => panic!("expected it to fit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_lone_wait_is_established_rather_than_searched() {
+        let a = wait(0, 100, 1).attain(Unit::BusReads).unwrap();
+        assert_eq!(a.shape, Shape::Monotone);
+        assert_eq!(a.cost.interval().hi(), 100);
+        assert!(
+            !a.interior,
+            "a monotone cost peaks at the top of the domain"
+        );
+    }
+
+    #[test]
+    fn a_short_circuit_is_never_claimed_monotone() {
+        let e = Expr::ShortCircuit {
+            guard: Box::new(wait(0, 100, 1)),
+            then: Box::new(wait(1, 100, 1)),
+        };
+        assert_eq!(e.shape(), Shape::EarlyExit);
+        assert_eq!(e.attain(Unit::BusReads).unwrap().shape, Shape::EarlyExit);
+    }
+
+    #[test]
+    fn a_branch_of_monotone_arms_stays_monotone() {
+        let e = Expr::Alt(vec![wait(0, 10, 1), wait(1, 100, 1)]);
+        assert_eq!(e.shape(), Shape::Monotone);
+        // And one arm that can stop early takes the whole branch with it.
+        let mixed = Expr::Alt(vec![
+            wait(0, 10, 1),
+            Expr::ShortCircuit {
+                guard: Box::new(wait(1, 10, 1)),
+                then: Box::new(wait(2, 10, 1)),
+            },
+        ]);
+        assert_eq!(mixed.shape(), Shape::EarlyExit);
+    }
+
+    #[test]
+    fn an_established_maximum_agrees_with_the_search() {
+        // The claim has to be worth making: where the shape says monotone, the
+        // answer must match what a search would have found.
+        let e = Expr::Alt(vec![wait(0, 37, 3), wait(1, 91, 2)]);
+        let established = e.attain(Unit::BusReads).unwrap();
+        assert_eq!(established.shape, Shape::Monotone);
+        let searched = (0..=e.widest_budget() + 1)
+            .map(|l| e.eval(l, Unit::BusReads).unwrap().cost.interval().hi())
+            .max()
+            .unwrap();
+        assert_eq!(established.cost.interval().hi(), searched);
     }
 
     #[test]

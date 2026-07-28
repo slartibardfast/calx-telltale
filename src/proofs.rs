@@ -4,11 +4,12 @@
 //! sampled. Run them with `cargo kani`.
 
 use crate::expr::{Counter, CounterFit, Exhaustion, Expr, Measure, Termination, Wait, WaitId};
-use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
+use crate::interrupt::{Arrival, Consequence, Deadline, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Refusal, Unit};
 use crate::source::SourceId;
+use crate::source::{Span, Validity};
 use crate::Count;
 
 fn any_provenance() -> Provenance {
@@ -260,11 +261,12 @@ fn an_interrupt(gap_prov: Provenance, depth: u32) -> Interrupt {
         arrival: Arrival::MinInterarrival(Quantity::new(any_edge_interval(), Unit::Base, gap_prov)),
         cost: Quantity::new(any_edge_interval(), Unit::Base, any_provenance()),
         priority: 0,
-        deadline: Some(Quantity::new(
-            any_edge_interval(),
-            Unit::Base,
-            any_provenance(),
-        )),
+        deadline: Some(Deadline {
+            budget: Quantity::new(any_edge_interval(), Unit::Base, any_provenance()),
+            armed: Validity::Always,
+        }),
+        jitter: None,
+        reenables: false,
         depth,
         on_drop: Consequence::LostSilently,
     }
@@ -279,7 +281,8 @@ fn an_interrupt(gap_prov: Provenance, depth: u32) -> Interrupt {
 fn a_blackout_with_no_path_to_time_is_never_judged() {
     let blackout = Quantity::new(any_edge_interval(), any_untimed_unit(), any_provenance());
     let irq = an_interrupt(any_provenance(), kani::any());
-    assert!(!irq.latency(blackout).verdict.is_answerable());
+    let over = Span::new(0, 0).expect("zero is a span");
+    assert!(!irq.latency(blackout, over).verdict.is_answerable());
     assert!(!irq.overrun(blackout).verdict.is_answerable());
 }
 
@@ -408,5 +411,25 @@ fn a_budget_fits_exactly_when_the_counter_holds_it() {
             assert!(budget > h);
             assert_eq!(h, holds);
         }
+    }
+}
+
+/// A wait's cost never falls as the world gets slower.
+///
+/// This is the leaf case the whole monotonicity claim rests on. The structural
+/// rule that a branch of monotone arms stays monotone is only worth anything if
+/// the base case holds, and it is proved here rather than argued.
+#[kani::proof]
+fn a_wait_never_costs_less_as_latency_rises() {
+    let budget = any_edge();
+    let earlier = any_edge();
+    let later = any_edge();
+    kani::assume(earlier <= later);
+    let w = Expr::Leaf(any_wait(budget, 1));
+    if let (Ok(a), Ok(b)) = (
+        w.eval(earlier, Unit::BusReads),
+        w.eval(later, Unit::BusReads),
+    ) {
+        assert!(a.cost.interval().hi() <= b.cost.interval().hi());
     }
 }

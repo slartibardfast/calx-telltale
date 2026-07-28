@@ -9,7 +9,7 @@
 //! commands, the exit codes, and the register grammar without reading anything
 //! else, because a surface an agent cannot discover is one it will guess at.
 
-use calx_telltale::expr::{CounterFit, Expr, Termination, Wait};
+use calx_telltale::expr::{CounterFit, Expr, Shape, Termination, Wait};
 use calx_telltale::interrupt::Verdict;
 use calx_telltale::limits::LIMITS;
 use calx_telltale::quantity::Unit;
@@ -358,18 +358,25 @@ fn projection(path: &str, json: bool, witness: bool) -> i32 {
                     human.push(format!(
                         "  composition {id} [{prov}] worst case {cost}, attained at latency {}{}",
                         a.witness,
-                        if a.interior {
-                            " (interior: a sweep of the extremes would have missed it)"
-                        } else {
-                            " (at the boundary)"
+                        match (a.shape, a.interior) {
+                            (Shape::Monotone, _) =>
+                                " (established: the cost cannot fall, so no search was needed)",
+                            (Shape::EarlyExit, true) =>
+                                " (searched, interior: a sweep of the extremes would have missed it)",
+                            (Shape::EarlyExit, false) => " (searched, at the boundary)",
                         }
                     ));
                 } else {
                     human.push(format!("  composition {id} [{prov}] worst case {cost}"));
                 }
                 rows.push(format!(
-                    "{{\"composition\":{id},\"verdict\":\"priced\",\"cost\":\"{cost}\",\"provenance\":\"{prov}\",\"witness\":\"{}\",\"interior\":{}}}",
-                    a.witness, a.interior
+                    "{{\"composition\":{id},\"verdict\":\"priced\",\"cost\":\"{cost}\",\"provenance\":\"{prov}\",\"witness\":\"{}\",\"interior\":{},\"how\":\"{}\"}}",
+                    a.witness,
+                    a.interior,
+                    match a.shape {
+                        Shape::Monotone => "established",
+                        Shape::EarlyExit => "searched",
+                    }
                 ));
             }
         }

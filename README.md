@@ -137,8 +137,16 @@ whether that latency was interior. The search is bounded by the widest budget in
 the composition rather than by any cost, which keeps it small even where the
 costs run to millions: past that bound every wait has already given up.
 
-Monotonicity is never assumed. Where the tool can establish it, it reports it as
-a proved property. Where it cannot, it searches the domain.
+Monotonicity is never assumed. Where the tool can establish it the answer is
+reported as established rather than searched, and no search runs: a cost that
+cannot fall peaks at the top of the domain by construction. That claim rests on
+the leaf case, which is proved rather than argued, and propagates structurally,
+so a branch of monotone arms stays monotone while anything that can stop early
+takes the whole composition with it.
+
+Where it cannot be established the domain is searched instead, and the report
+says which happened. A searched maximum is only as good as the domain searched,
+which is worth distinguishing from one that holds by construction.
 
 ## Proof obligations
 
