@@ -1,11 +1,12 @@
 [package]
 name = "calx-telltale-census"
-# It has a claim now. Zero said it had never been released and nothing had
+# It tracks the core's, because call/0014 gives the repository one version and
+# both crates hold it. Zero once said it had never been released and nothing had
 # decided that it would be; finding loops is the capability that was missing,
 # and call/0012 settled how. Still unpublished to any registry: it is a tool for
 # this project rather than a library, and it stays out of the canonical artifact
 # either way (call/0011).
-version = "0.1.0"
+version = "0.5.0"
 publish = false
 edition = "2021"
 rust-version = "1.85"
