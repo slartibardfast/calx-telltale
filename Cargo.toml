@@ -1,3 +1,11 @@
+[workspace]
+members = ["census"]
+
+# The adapter is a workspace member rather than a module, so the core keeps the
+# empty dependency list that lets its release build offline straight from
+# source (call/0011). The canonical artifact is built with `-p calx-telltale`
+# and never includes the adapter.
+
 [package]
 name = "calx-telltale"
 version = "0.2.0"

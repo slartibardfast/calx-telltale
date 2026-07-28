@@ -24,9 +24,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
       - name: Lints
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Suite
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
   floor:
     runs-on: ubuntu-latest
@@ -38,4 +38,4 @@ jobs:
       - name: Install the declared floor
         run: rustup toolchain install 1.85.0 --profile minimal
       - name: Build at the floor
-        run: cargo +1.85.0 check --locked --all-targets
+        run: cargo +1.85.0 check --workspace --locked --all-targets

@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "calx-telltale"
 version = "0.2.0"
+
+[[package]]
+name = "calx-telltale-census"
+version = "0.2.0"
+dependencies = [
+ "calx-telltale",
+]

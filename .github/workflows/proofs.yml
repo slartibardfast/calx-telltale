@@ -40,5 +40,7 @@ jobs:
           cargo install --locked kani-verifier@"$KANI_VERSION"
           cargo kani setup
 
+      # The core alone. The adapter carries no obligations: it reads an image
+      # and writes text, and the claims live in the arithmetic (call/0011).
       - name: Discharge the obligations
-        run: cargo kani
+        run: cargo kani -p calx-telltale
