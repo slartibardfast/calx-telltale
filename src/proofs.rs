@@ -3,7 +3,7 @@
 //! These are the properties of the arithmetic, proved universally rather than
 //! sampled. Run them with `cargo kani`.
 
-use crate::interrupt::{Arrival, Interrupt, InterruptId};
+use crate::interrupt::{Arrival, Consequence, Interrupt, InterruptId};
 use crate::interval::Interval;
 use crate::provenance::Provenance;
 use crate::quantity::{Quantity, Refusal, Unit};
@@ -257,12 +257,15 @@ fn an_interrupt(gap_prov: Provenance, depth: u32) -> Interrupt {
     Interrupt {
         id: InterruptId(0),
         arrival: Arrival::MinInterarrival(Quantity::new(any_edge_interval(), Unit::Base, gap_prov)),
+        cost: Quantity::new(any_edge_interval(), Unit::Base, any_provenance()),
+        priority: 0,
         deadline: Some(Quantity::new(
             any_edge_interval(),
             Unit::Base,
             any_provenance(),
         )),
         depth,
+        on_drop: Consequence::LostSilently,
     }
 }
 
@@ -289,4 +292,26 @@ fn a_verdict_is_no_stronger_than_its_weakest_input() {
     let j = irq.overrun(blackout);
     assert!(j.provenance.strength() <= blackout_prov.strength());
     assert!(j.provenance.strength() <= gap_prov.strength());
+}
+
+/// Priority is a strict order, so no interrupt preempts itself and no two
+/// preempt each other.
+///
+/// The recurrence relies on this to partition the set: an interrupt that
+/// appeared in its own interference term would never settle. The rest of the
+/// schedule analysis is covered by tests rather than by harnesses, because the
+/// recurrence walks a heap-allocated set and that is not what the deeper rung
+/// is worth spending on (call/0009).
+#[kani::proof]
+fn preemption_is_a_strict_order() {
+    let a = an_interrupt_at(kani::any());
+    let b = an_interrupt_at(kani::any());
+    assert!(!a.preempts(&a));
+    assert!(!(a.preempts(&b) && b.preempts(&a)));
+}
+
+fn an_interrupt_at(priority: u8) -> Interrupt {
+    let mut irq = an_interrupt(any_provenance(), kani::any());
+    irq.priority = priority;
+    irq
 }

@@ -210,6 +210,42 @@ reconfigured while it ran, cannot be compared against a deadline in nanoseconds.
 The tool says which piece is missing and declines, and a run reports how many
 comparisons it withheld so that an exclusion never reads as a clean sweep.
 
+## Keeping up
+
+An interrupt also declares how long its handler runs, what priority it holds, and
+what a dropped arrival costs. Priority is numbered the way the hardware numbers
+it, so a lower number preempts a higher one.
+
+Utilisation is the first-order check: `Σ C/T` over the declared set, carried in
+parts per million so it stays exact. A set demanding more time than exists is
+reported as such without iterating, because no ordering rescues it.
+
+Response time is then the fixed point of
+
+```
+R = C + B + Σ over higher priorities of ceil(R / T) * C
+```
+
+which is the standard fixed-priority analysis rather than anything invented here.
+The blocking term is the interrupts-off window this project already computes, so
+the two halves of the tool meet at that symbol. Every verdict carries its margin,
+since a response inside its deadline by a hair and one inside by an order of
+magnitude are different facts.
+
+The handler cost is **declared, not derived**. This tool computes no worst-case
+execution time. It also declines to pretend the quantity is absent, because a
+model missing the term cannot say whether anything keeps up at all, so it takes
+the number it is given and carries the provenance. A guessed cost makes every
+verdict resting on it a guess.
+
+## What it does not model
+
+The exclusions are enumerated in the crate and stated on every run, because an
+exclusion that is not stated reads as coverage. They include execute-in-place
+instruction fetch, hangs that are not loops, unresolved indirect calls, windows
+that cross stack frames, correlated clock failure, nested budgets, release
+jitter, nesting within a priority level, and worst-case execution time itself.
+
 ## Status
 
 The verified core is built: quantities, exact rates, the register base, the tree

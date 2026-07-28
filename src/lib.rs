@@ -42,17 +42,23 @@ pub type Count = u128;
 
 pub mod interrupt;
 pub mod interval;
+pub mod limits;
 pub mod provenance;
 pub mod quantity;
 pub mod rate;
+pub mod schedule;
 pub mod source;
 
 #[cfg(kani)]
 mod proofs;
 
-pub use interrupt::{Arrival, Interrupt, InterruptId, Judgement, Missing, Sweep, Verdict};
+pub use interrupt::{
+    Arrival, Consequence, Interrupt, InterruptId, Judgement, Missing, Sweep, Verdict,
+};
 pub use interval::Interval;
+pub use limits::{Limit, LIMITS};
 pub use provenance::Provenance;
 pub use quantity::{Quantity, Refusal, Unit};
 pub use rate::{Base, NoBase, Rate};
+pub use schedule::{Analysis, Schedulability, Schedule};
 pub use source::{Delay, Rounding, Source, SourceId, Span, Validity};

@@ -59,16 +59,50 @@ impl Arrival {
     }
 }
 
+/// What becomes of an arrival the buffer had no room for.
+///
+/// Recorded so that an overrun verdict can say what was lost rather than only
+/// that something was. The register holds the prose; this is the part the core
+/// reasons about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Consequence {
+    /// Lost with no record kept. The worst of the three, because nothing
+    /// downstream can tell that it happened.
+    LostSilently,
+    /// Lost, and the loss recorded somewhere a reader can find it.
+    LostAndLogged,
+    /// The source retries, so the arrival is delayed rather than lost.
+    Retried,
+}
+
 /// A declared interrupt.
 #[derive(Clone, Copy, Debug)]
 pub struct Interrupt {
     pub id: InterruptId,
     pub arrival: Arrival,
+    /// How long the handler runs. Declared rather than derived: this tool does
+    /// not compute a worst-case execution time, and it does not pretend the
+    /// quantity is absent either. A cost somebody guessed makes every verdict
+    /// resting on it a guess.
+    pub cost: Quantity,
+    /// Priority, numbered the way the hardware numbers it: a lower number
+    /// preempts a higher one.
+    pub priority: u8,
     /// The latency this interrupt can absorb before it has missed. An interrupt
     /// with none declared can still be judged on overrun.
     pub deadline: Option<Quantity>,
     /// How many arrivals can queue before one is lost.
     pub depth: u32,
+    /// What a dropped arrival costs.
+    pub on_drop: Consequence,
+}
+
+impl Interrupt {
+    /// Whether this interrupt preempts `other`.
+    #[must_use]
+    pub const fn preempts(&self, other: &Interrupt) -> bool {
+        self.priority < other.priority
+    }
 }
 
 /// What a comparison was missing.
@@ -79,7 +113,7 @@ pub enum Missing {
     /// reconfigured.
     NoPathToTime(Unit),
     /// Both sides reach a time, and no declared conversion connects them.
-    NoConversion { blackout: Unit, against: Unit },
+    NoConversion { from: Unit, to: Unit },
     /// The interrupt declares no deadline, so there is no latency to judge.
     NoDeadline,
     /// An arrival gap of zero bounds nothing: an interrupt that can arrive
@@ -130,6 +164,19 @@ impl Judgement {
     }
 }
 
+/// Why two units will not meet.
+///
+/// A unit with no path to a time is a different finding from two temporal units
+/// with no conversion between them, and an operator acts on them differently.
+/// One decision point keeps the two apart everywhere.
+pub(crate) fn mismatch(from: Unit, to: Unit) -> Missing {
+    if from.is_temporal() {
+        Missing::NoConversion { from, to }
+    } else {
+        Missing::NoPathToTime(from)
+    }
+}
+
 /// How many arrivals can land inside a window.
 ///
 /// A window of length `b` admits at most `floor(b / gap) + 1` arrivals, because
@@ -138,14 +185,7 @@ impl Judgement {
 /// shortest gap, which is the worst pairing.
 pub fn arrivals_during(blackout: Quantity, gap: Quantity) -> Result<Quantity, Missing> {
     if blackout.unit() != gap.unit() {
-        return Err(if blackout.unit().is_temporal() {
-            Missing::NoConversion {
-                blackout: blackout.unit(),
-                against: gap.unit(),
-            }
-        } else {
-            Missing::NoPathToTime(blackout.unit())
-        });
+        return Err(mismatch(blackout.unit(), gap.unit()));
     }
     if gap.interval().lo() == 0 {
         return Err(Missing::UnboundedArrivals);
@@ -185,15 +225,10 @@ impl Interrupt {
             return Judgement::withheld(Missing::NoDeadline, blackout.provenance());
         };
         if blackout.unit() != deadline.unit() {
-            let missing = if blackout.unit().is_temporal() {
-                Missing::NoConversion {
-                    blackout: blackout.unit(),
-                    against: deadline.unit(),
-                }
-            } else {
-                Missing::NoPathToTime(blackout.unit())
-            };
-            return Judgement::withheld(missing, blackout.provenance().join(deadline.provenance()));
+            return Judgement::withheld(
+                mismatch(blackout.unit(), deadline.unit()),
+                blackout.provenance().join(deadline.provenance()),
+            );
         }
         let provenance = blackout.provenance().join(deadline.provenance());
         let verdict = if blackout.interval().hi() > deadline.interval().lo() {
@@ -261,7 +296,7 @@ impl Sweep {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arrival, Interrupt, InterruptId, Missing, Sweep, Verdict};
+    use super::{Arrival, Consequence, Interrupt, InterruptId, Missing, Sweep, Verdict};
     use crate::interval::Interval;
     use crate::provenance::Provenance::{Assumed, Derived, Extracted};
     use crate::quantity::{Quantity, Unit};
@@ -278,8 +313,11 @@ mod tests {
         Interrupt {
             id: InterruptId(0),
             arrival: Arrival::MinInterarrival(q(1_000, 1_000, Unit::Base, Extracted)),
+            cost: q(10, 10, Unit::Base, Extracted),
+            priority: 0,
             deadline: Some(q(5_000, 5_000, Unit::Base, Extracted)),
             depth,
+            on_drop: Consequence::LostAndLogged,
         }
     }
 
@@ -374,8 +412,11 @@ mod tests {
                 source: SourceId(0),
                 period: q(1_000, 1_000, Unit::Base, Extracted),
             },
+            cost: q(10, 10, Unit::Base, Extracted),
+            priority: 1,
             deadline: None,
             depth: 2,
+            on_drop: Consequence::Retried,
         };
         assert_eq!(irq.arrival.source(), Some(SourceId(0)));
         assert_eq!(
