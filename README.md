@@ -172,15 +172,16 @@ Following the `calx-mill` idiom.
 
 | | |
 |---|---|
-| `census` | inventory waits and windows from an ELF; emit a skeleton register |
+| `census` | *(planned)* inventory waits and windows from an ELF; emit a skeleton register |
 | `check` | run the proof obligations against a register |
-| `project` | worst-case cost of each declared composition |
-| `attain` | report the witness: where each maximum occurs |
-| `deadline` | compare projections against declared deadlines, by armed interval |
-| `overrun` | whether a blackout delivers more arrivals than a buffer holds |
-| `diff` | register against register, for regression across builds |
+| `project` | *(planned)* worst-case cost of each declared composition |
+| `attain` | *(planned)* report the witness: where each maximum occurs |
+| `deadline` | *(planned)* compare projections against declared deadlines, by armed interval |
+| `overrun` | *(planned)* whether a blackout delivers more arrivals than a buffer holds |
+| `diff` | *(planned)* register against register, for regression across builds |
 
-The register itself is a hand-authorable, diffable file declaring waits,
+The verbs marked *(planned)* compute correctly in the library and are not yet
+reachable from the command line. The register itself is a hand-authorable, diffable file declaring waits,
 windows, deadlines, compositions and conversions. An ELF adapter emits a
 skeleton register with `Extracted` provenance and blanks wherever a human must
 still supply a budget or a measure.
