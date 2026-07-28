@@ -93,11 +93,7 @@ fn draft(path: &str, min_size: u64) -> u8 {
         "# Instruction encoding: {} ({}-endian), {}.",
         enc.name(),
         if enc.little_endian { "little" } else { "big" },
-        match enc.fixed_width() {
-            Some(true) => "fixed-width instructions",
-            Some(false) => "variable-width instructions",
-            None => "instruction width depends on the configuration",
-        }
+        enc.boundaries().says()
     );
     println!("#");
     println!("# Every `?` is a decision this adapter could not make. A budget, a counter");

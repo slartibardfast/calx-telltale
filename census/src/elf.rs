@@ -14,8 +14,7 @@
 pub enum NotAnImage {
     /// The magic number says this is something else.
     WrongMagic,
-    /// Only 64-bit little-endian images are read. A big-endian or 32-bit part
-    /// is a real case and simply is not handled yet.
+    /// The class byte says neither 32-bit nor 64-bit.
     Unsupported,
     /// A header, table or name ran past the end of the file.
     Truncated,
@@ -55,21 +54,63 @@ impl Encoding {
         }
     }
 
-    /// Whether every instruction is the same width.
+    /// How much work it takes to find where one instruction ends and the next
+    /// begins.
     ///
-    /// Where they are, a decoder strides. Where they are not, it has to decode
-    /// each instruction far enough to learn its length, which is a different
-    /// and larger job. A set carrying both is reported as mixed, because the
-    /// header alone does not say which the code uses.
+    /// This is the cost that decides whether writing a decoder is affordable,
+    /// and it has three tiers rather than two.
     #[must_use]
-    pub const fn fixed_width(self) -> Option<bool> {
+    pub const fn boundaries(self) -> Boundaries {
         match self.machine {
-            183 => Some(true),     // A64 is fixed at four bytes
-            3 | 62 => Some(false), // x86 is variable by design
-            40 => Some(false),     // A32 is fixed, T32 is not, and both appear
-            243 => None,           // depends on whether the C extension is used
-            45 | 93 | 195 => None, // ARC encodings vary by configuration
-            _ => None,
+            183 => Boundaries::Strided,
+            // Thumb-2 and the compressed RISC-V forms both read their length
+            // from a fixed prefix of the first halfword, so a reader advances
+            // without understanding the instruction.
+            40 | 243 => Boundaries::PrefixLength,
+            // ARC carries two independent width-changing forms: the compact
+            // encodings, and a long-immediate word appended to an instruction.
+            // Whether that word follows is a property of the operand form, so
+            // no fixed prefix gives the length.
+            45 | 93 | 195 => Boundaries::OperandLength,
+            3 | 62 => Boundaries::OperandLength,
+            _ => Boundaries::Unknown,
+        }
+    }
+}
+
+/// What it takes to find instruction boundaries in an encoding.
+///
+/// Boundaries come before branches: a back edge cannot be found without knowing
+/// where instructions start, and on a mixed-width encoding that is the larger
+/// half of the work.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Boundaries {
+    /// Every instruction is the same size, so a reader strides over the extent.
+    Strided,
+    /// Sizes vary and a fixed prefix of the first unit gives the length, so a
+    /// reader advances without understanding the instruction.
+    PrefixLength,
+    /// Sizes vary and the length depends on the operand form, so a reader has
+    /// to decode most of the instruction before it can find the next one. This
+    /// is the tier where writing a decoder stops being cheap.
+    OperandLength,
+    /// This adapter has no entry for the encoding.
+    Unknown,
+}
+
+impl Boundaries {
+    /// How a report describes the tier.
+    #[must_use]
+    pub const fn says(self) -> &'static str {
+        match self {
+            Boundaries::Strided => "fixed-width, so boundaries are strided",
+            Boundaries::PrefixLength => {
+                "mixed-width, with the length in a fixed prefix of each instruction"
+            }
+            Boundaries::OperandLength => {
+                "mixed-width, with the length depending on the operand form"
+            }
+            Boundaries::Unknown => "boundaries unknown to this adapter",
         }
     }
 }
@@ -83,6 +124,7 @@ pub struct Function {
 
 const MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const CLASS_64: u8 = 2;
+const CLASS_32: u8 = 1;
 const LITTLE_ENDIAN: u8 = 1;
 const SYMTAB: u32 = 2;
 const STRTAB: u32 = 3;
@@ -134,25 +176,45 @@ pub fn functions(image: &[u8]) -> Result<Vec<Function>, NotAnImage> {
     if image.get(..4) != Some(&MAGIC[..]) {
         return Err(NotAnImage::WrongMagic);
     }
-    if image.get(4) != Some(&CLASS_64) || image.get(5) != Some(&LITTLE_ENDIAN) {
-        return Err(NotAnImage::Unsupported);
-    }
+    // Thirty-two bit images are the common case on the parts this tool is
+    // aimed at, so both classes are read. The layouts differ in more than field
+    // width: a symbol's info byte moves, which is the kind of difference that
+    // reads plausible values from the wrong offsets rather than failing.
+    let wide = match image.get(4) {
+        Some(&CLASS_64) => true,
+        Some(&CLASS_32) => false,
+        _ => return Err(NotAnImage::Unsupported),
+    };
 
-    let shoff = u64_at(image, 0x28)? as usize;
-    let shentsize = u16_at(image, 0x3a)? as usize;
-    let shnum = u16_at(image, 0x3c)? as usize;
+    let (shoff, shentsize_at, shnum_at) = if wide {
+        (u64_at(image, 0x28)? as usize, 0x3a, 0x3c)
+    } else {
+        (u32_at(image, 0x20)? as usize, 0x2e, 0x30)
+    };
+    let shentsize = u16_at(image, shentsize_at)? as usize;
+    let shnum = u16_at(image, shnum_at)? as usize;
 
     let section = |i: usize| -> Result<(u32, usize, usize, usize, usize), NotAnImage> {
         let at = shoff
             .checked_add(i.checked_mul(shentsize).ok_or(NotAnImage::Truncated)?)
             .ok_or(NotAnImage::Truncated)?;
-        Ok((
-            u32_at(image, at + 4)?,             // kind
-            u64_at(image, at + 0x18)? as usize, // offset
-            u64_at(image, at + 0x20)? as usize, // size
-            u32_at(image, at + 0x28)? as usize, // link
-            u64_at(image, at + 0x38)? as usize, // entry size
-        ))
+        if wide {
+            Ok((
+                u32_at(image, at + 4)?,
+                u64_at(image, at + 0x18)? as usize,
+                u64_at(image, at + 0x20)? as usize,
+                u32_at(image, at + 0x28)? as usize,
+                u64_at(image, at + 0x38)? as usize,
+            ))
+        } else {
+            Ok((
+                u32_at(image, at + 4)?,
+                u32_at(image, at + 0x10)? as usize,
+                u32_at(image, at + 0x14)? as usize,
+                u32_at(image, at + 0x18)? as usize,
+                u32_at(image, at + 0x24)? as usize,
+            ))
+        }
     };
 
     let mut out = Vec::new();
@@ -169,7 +231,10 @@ pub fn functions(image: &[u8]) -> Result<Vec<Function>, NotAnImage> {
             let at = offset
                 .checked_add(s.checked_mul(entsize).ok_or(NotAnImage::Truncated)?)
                 .ok_or(NotAnImage::Truncated)?;
-            let info = *image.get(at + 4).ok_or(NotAnImage::Truncated)?;
+            // The info byte sits at a different offset in each class, and the
+            // size with it.
+            let (info_at, size_at) = if wide { (4, 0x10) } else { (12, 8) };
+            let info = *image.get(at + info_at).ok_or(NotAnImage::Truncated)?;
             if info & 0xf != FUNC {
                 continue;
             }
@@ -177,10 +242,12 @@ pub fn functions(image: &[u8]) -> Result<Vec<Function>, NotAnImage> {
             if name.is_empty() {
                 continue;
             }
-            out.push(Function {
-                name,
-                size: u64_at(image, at + 0x10)?,
-            });
+            let size = if wide {
+                u64_at(image, at + size_at)?
+            } else {
+                u32_at(image, at + size_at)? as u64
+            };
+            out.push(Function { name, size });
         }
     }
     Ok(out)
@@ -200,11 +267,20 @@ mod tests {
     }
 
     #[test]
-    fn a_thirty_two_bit_image_is_declined_by_name() {
-        // Saying which support is missing beats a wrong answer or a panic.
-        let mut header = vec![0x7f, b'E', b'L', b'F', 1, 1];
+    fn a_class_byte_naming_neither_width_is_declined() {
+        let mut header = vec![0x7f, b'E', b'L', b'F', 7, 1];
         header.resize(64, 0);
         assert_eq!(functions(&header).unwrap_err(), NotAnImage::Unsupported);
+    }
+
+    #[test]
+    fn a_thirty_two_bit_image_is_read_rather_than_declined() {
+        // The parts this tool is aimed at are largely 32-bit, so declining
+        // them would have declined the domain. A header with no sections
+        // yields nothing and reads cleanly.
+        let mut header = vec![0x7f, b'E', b'L', b'F', 1, 1];
+        header.resize(64, 0);
+        assert_eq!(functions(&header), Ok(Vec::new()));
     }
 
     #[test]
@@ -224,7 +300,22 @@ mod tests {
         let e = super::encoding(&bytes).expect("and declares an encoding");
         assert!(e.little_endian);
         assert_eq!(e.name(), "x86-64");
-        assert_eq!(e.fixed_width(), Some(false), "x86 is variable by design");
+        assert_eq!(e.boundaries(), super::Boundaries::OperandLength);
+    }
+
+    #[test]
+    fn the_boundary_tiers_are_told_apart() {
+        let mk = |machine| super::Encoding {
+            machine,
+            little_endian: true,
+        };
+        // A64 strides. Thumb and compressed RISC-V read a length prefix. ARC
+        // needs the operand form, which is the tier where a decoder stops
+        // being cheap.
+        assert_eq!(mk(183).boundaries(), super::Boundaries::Strided);
+        assert_eq!(mk(40).boundaries(), super::Boundaries::PrefixLength);
+        assert_eq!(mk(243).boundaries(), super::Boundaries::PrefixLength);
+        assert_eq!(mk(195).boundaries(), super::Boundaries::OperandLength);
     }
 
     #[test]
@@ -234,7 +325,7 @@ mod tests {
             little_endian: true,
         };
         assert_eq!(unknown.name(), "unrecognised");
-        assert_eq!(unknown.fixed_width(), None);
+        assert_eq!(unknown.boundaries(), super::Boundaries::Unknown);
     }
 
     #[test]

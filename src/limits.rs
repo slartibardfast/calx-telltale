@@ -47,6 +47,13 @@ pub const LIMITS: &[Limit] = &[
                   declared tolerance, which would move every clock beneath it at once",
     },
     Limit {
+        name: "delegated instruction boundaries",
+        because: "where a register is drafted from a toolchain listing rather than decoded, its \
+                  soundness rests on that toolchain finding instruction boundaries correctly; a \
+                  mis-lengthed instruction loses a back edge, and the resulting freeze set is \
+                  wrong in a way nothing downstream can detect",
+    },
+    Limit {
         name: "nested budgets",
         because: "a wait knows its own bound and not what its callers have already spent, so a \
                   per-item bound holds while a walk over items has none",
@@ -71,7 +78,7 @@ mod tests {
 
     #[test]
     fn every_limit_says_why() {
-        assert!(count() >= 7);
+        assert!(count() >= 8);
         for l in LIMITS {
             assert!(!l.name.is_empty());
             assert!(
