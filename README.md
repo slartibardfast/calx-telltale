@@ -66,6 +66,13 @@ The derivation is guarded, and the tool reports the span its base can represent.
 A finer base buys resolution and spends range, so a register whose windows do not
 fit is told at the point the base is derived.
 
+**A shared root cancels.** Two clocks off one root are exact multiples of each
+other, so the root's error moves both by the same factor and vanishes from any
+comparison between them. Their ratio is exact even though neither frequency is
+known exactly. Worst-casing them independently would widen such a comparison in
+both directions, pricing an excursion that cannot happen: one clock running fast
+while the other, driven by the same crystal, ran slow.
+
 **Clocks form a tree.** Real parts rarely have independent clocks. A core clock
 comes off a synthesiser, the only counter runs at the core rate, a kernel tick
 comes off a compare on that counter, and a sleep primitive rides the tick.
@@ -254,8 +261,8 @@ verdict resting on it a guess.
 The exclusions are enumerated in the crate and stated on every run, because an
 exclusion that is not stated reads as coverage. They cover execute-in-place
 instruction fetch, hangs that are not loops, unresolved indirect calls, windows
-that cross stack frames, correlated clock failure, nested budgets, and
-worst-case execution time itself.
+that cross stack frames, a common-mode excursion taking a root outside its own
+declared tolerance, nested budgets, and worst-case execution time itself.
 
 A deadline carries the span it is armed over, so a window outside it is reported
 unarmed rather than passed. An arrival may declare its release jitter, which

@@ -262,6 +262,34 @@ impl SourceTable {
         Err(TreeFault::Cycle(id))
     }
 
+    /// The exact ratio between two clocks, where they share a root.
+    ///
+    /// This is where correlation enters the arithmetic rather than only the
+    /// bookkeeping. Two clocks off one root are exact multiples of each other,
+    /// so the root's error moves both by the same factor and cancels in any
+    /// comparison between them. Their ratio is therefore exact even though
+    /// neither frequency is known exactly.
+    ///
+    /// Worst-casing the two independently would widen such a comparison in
+    /// both directions, which prices an excursion that cannot happen: it would
+    /// have one clock fast while the other, driven by the same crystal, ran
+    /// slow.
+    ///
+    /// `None` where the clocks hang off different roots. Then nothing cancels,
+    /// each tolerance stands on its own, and a caller has to widen.
+    pub fn exact_ratio(&self, a: SourceId, b: SourceId) -> Result<Option<Rate>, TreeFault> {
+        if !self.correlated(a, b)? {
+            return Ok(None);
+        }
+        let ra = self.resolve(a)?;
+        let rb = self.resolve(b)?;
+        // a / b, as a reduced rational.
+        let inverted = Rate::new(rb.den(), rb.num()).ok_or(TreeFault::RateOverflow(b))?;
+        Ok(Some(
+            ra.checked_mul(inverted).ok_or(TreeFault::RateOverflow(a))?,
+        ))
+    }
+
     /// Whether two clocks fail together.
     ///
     /// Clocks sharing a root are one correlation class. Worst-casing them
@@ -493,6 +521,43 @@ mod tests {
         let t = one_root_part(Validity::Always);
         assert!(t.correlated(TICK, COUNTER).unwrap());
         assert_eq!(t.root_of(TICK).unwrap(), CORE);
+    }
+
+    #[test]
+    fn a_shared_root_cancels_in_a_comparison() {
+        // The counter runs at 400 MHz and the tick at 1 kHz, both off the same
+        // synthesiser. Whatever that synthesiser is really doing, there are
+        // exactly 400000 counter ticks to one kernel tick, so the ratio is
+        // exact and the tolerance cancels rather than compounding.
+        let t = one_root_part(Validity::Always);
+        let ratio = t.exact_ratio(COUNTER, TICK).unwrap().unwrap();
+        assert_eq!((ratio.num(), ratio.den()), (400_000, 1));
+        // And the other way round.
+        let inverse = t.exact_ratio(TICK, COUNTER).unwrap().unwrap();
+        assert_eq!((inverse.num(), inverse.den()), (1, 400_000));
+    }
+
+    #[test]
+    fn independent_clocks_cancel_nothing() {
+        // A second root, so nothing ties the two together and each tolerance
+        // stands on its own.
+        let cost = Quantity::new(Interval::point(1), Unit::BusReads, Provenance::Measured);
+        let mut sources: Vec<Source> = (0..3)
+            .map(|i| *one_root_part(Validity::Always).get(SourceId(i)).unwrap())
+            .collect();
+        sources.push(Source {
+            id: SourceId(9),
+            origin: Origin::Root,
+            nominal: Rate::hz(32_768).unwrap(),
+            nominal_prov: Provenance::Extracted,
+            tolerance_ppm: 20,
+            width_bits: 24,
+            read_cost: cost,
+            valid: Validity::Always,
+        });
+        let t = SourceTable::new(sources);
+        assert!(!t.correlated(COUNTER, SourceId(9)).unwrap());
+        assert_eq!(t.exact_ratio(COUNTER, SourceId(9)).unwrap(), None);
     }
 
     #[test]

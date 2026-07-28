@@ -41,10 +41,10 @@ pub const LIMITS: &[Limit] = &[
                   to a per-function analysis, and the locked-wrapper pattern makes those common",
     },
     Limit {
-        name: "correlated failure",
-        because: "each clock's tolerance is modelled on its own, so a fault moving several \
-                  clocks together is understated; the shared root is recorded, and the \
-                  correlation is not yet carried into the arithmetic",
+        name: "common-mode excursion",
+        because: "a comparison between clocks off one root is exact, because the root's error \
+                  moves both and cancels; what is not modelled is the root leaving its own \
+                  declared tolerance, which would move every clock beneath it at once",
     },
     Limit {
         name: "nested budgets",
@@ -88,7 +88,7 @@ mod tests {
         for expected in [
             "execute-in-place",
             "unresolved indirect calls",
-            "correlated failure",
+            "common-mode excursion",
             "worst-case execution time",
         ] {
             assert!(names.contains(&expected), "missing exclusion: {expected}");
