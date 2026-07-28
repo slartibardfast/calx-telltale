@@ -8,7 +8,7 @@ version = "0.5.1"
 
 [[package]]
 name = "calx-telltale-census"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "calx-telltale",
 ]

@@ -6,7 +6,7 @@ name = "calx-telltale-census"
 # and call/0012 settled how. Still unpublished to any registry: it is a tool for
 # this project rather than a library, and it stays out of the canonical artifact
 # either way (call/0011).
-version = "0.5.1"
+version = "0.5.2"
 publish = false
 edition = "2021"
 rust-version = "1.85"
