@@ -12,7 +12,7 @@
 
 mod elf;
 
-use elf::{functions, NotAnImage};
+use elf::{encoding, functions, NotAnImage};
 
 const USAGE: &str = "\
 calx-telltale-census — draft a register from an image
@@ -86,7 +86,19 @@ fn draft(path: &str, min_size: u64) -> u8 {
 
     let candidates: Vec<&elf::Function> = found.iter().filter(|f| f.size >= min_size).collect();
 
+    let enc = encoding(&bytes).expect("the header parsed above");
     println!("# Drafted from {path} by calx-telltale-census.");
+    println!("#");
+    println!(
+        "# Instruction encoding: {} ({}-endian), {}.",
+        enc.name(),
+        if enc.little_endian { "little" } else { "big" },
+        match enc.fixed_width() {
+            Some(true) => "fixed-width instructions",
+            Some(false) => "variable-width instructions",
+            None => "instruction width depends on the configuration",
+        }
+    );
     println!("#");
     println!("# Every `?` is a decision this adapter could not make. A budget, a counter");
     println!("# width and a measure all have to be read from the source by someone who");

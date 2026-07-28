@@ -21,6 +21,59 @@ pub enum NotAnImage {
     Truncated,
 }
 
+/// The instruction encoding an image holds, so far as its header declares it.
+///
+/// This is the unit a decoder is written against, and it is finer than the
+/// instruction set. One set can carry several encodings, and they are separate
+/// decoders: fixed-width instructions can be strided over, while a mixed-width
+/// encoding has to be decoded far enough to learn each instruction's length
+/// before the next one can be found at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Encoding {
+    /// The instruction set, as the image's own header names it.
+    pub machine: u16,
+    /// Whether instruction words are little-endian.
+    pub little_endian: bool,
+}
+
+impl Encoding {
+    /// The instruction set's usual name, or its number where this adapter has
+    /// none. Naming the number beats reporting nothing: an operator can look it
+    /// up, and a wrong guess would be worse than an honest gap.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self.machine {
+            3 => "x86",
+            40 => "ARM (A32 or T32)",
+            45 => "ARC",
+            62 => "x86-64",
+            93 => "ARCompact",
+            183 => "AArch64 (A64)",
+            195 => "ARCv2",
+            243 => "RISC-V",
+            _ => "unrecognised",
+        }
+    }
+
+    /// Whether every instruction is the same width.
+    ///
+    /// Where they are, a decoder strides. Where they are not, it has to decode
+    /// each instruction far enough to learn its length, which is a different
+    /// and larger job. A set carrying both is reported as mixed, because the
+    /// header alone does not say which the code uses.
+    #[must_use]
+    pub const fn fixed_width(self) -> Option<bool> {
+        match self.machine {
+            183 => Some(true),     // A64 is fixed at four bytes
+            3 | 62 => Some(false), // x86 is variable by design
+            40 => Some(false),     // A32 is fixed, T32 is not, and both appear
+            243 => None,           // depends on whether the C extension is used
+            45 | 93 | 195 => None, // ARC encodings vary by configuration
+            _ => None,
+        }
+    }
+}
+
 /// A function the image declares.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Function {
@@ -65,6 +118,18 @@ fn name_at(b: &[u8], table: usize, offset: usize) -> Result<String, NotAnImage> 
 /// This is a list of candidates rather than a census of waits. Finding the
 /// polling loops inside these functions needs a disassembler, which is the part
 /// [call/0011] keeps out.
+/// The encoding this image declares in its header.
+pub fn encoding(image: &[u8]) -> Result<Encoding, NotAnImage> {
+    if image.get(..4) != Some(&MAGIC[..]) {
+        return Err(NotAnImage::WrongMagic);
+    }
+    let little_endian = image.get(5) == Some(&LITTLE_ENDIAN);
+    Ok(Encoding {
+        machine: u16_at(image, 0x12)?,
+        little_endian,
+    })
+}
+
 pub fn functions(image: &[u8]) -> Result<Vec<Function>, NotAnImage> {
     if image.get(..4) != Some(&MAGIC[..]) {
         return Err(NotAnImage::WrongMagic);
@@ -148,6 +213,28 @@ mod tests {
         let mut header = vec![0x7f, b'E', b'L', b'F', 2, 1];
         header.resize(20, 0);
         assert_eq!(functions(&header).unwrap_err(), NotAnImage::Truncated);
+    }
+
+    #[test]
+    fn an_image_names_the_encoding_it_holds() {
+        // The image answers part of the question itself, which is what lets the
+        // adapter decline by name rather than guess at a decoder.
+        let me = std::env::current_exe().expect("a test binary exists");
+        let bytes = std::fs::read(me).expect("and can be read");
+        let e = super::encoding(&bytes).expect("and declares an encoding");
+        assert!(e.little_endian);
+        assert_eq!(e.name(), "x86-64");
+        assert_eq!(e.fixed_width(), Some(false), "x86 is variable by design");
+    }
+
+    #[test]
+    fn an_encoding_this_adapter_cannot_name_is_still_reported() {
+        let unknown = super::Encoding {
+            machine: 0xbeef,
+            little_endian: true,
+        };
+        assert_eq!(unknown.name(), "unrecognised");
+        assert_eq!(unknown.fixed_width(), None);
     }
 
     #[test]
