@@ -22,6 +22,46 @@ refuses to invent a conversion it has no evidence for.
 It is not a firmware prover either. It proves properties of the model, and the
 model is a declaration written by a human or emitted by an adapter.
 
+## Getting started
+
+Download `calx-telltale` and `calx-telltale-census` from a
+[release](https://github.com/slartibardfast/calx-telltale/releases), or build
+from the tag with `cargo build --release --locked`. Check what you downloaded
+against the published `SHA256SUMS`: the binaries are byte-reproducible from the
+pinned source in a pinned container, so the hash is worth comparing rather than
+decoration.
+
+Read `calx-telltale limits` first. It names the failure classes the tool does
+not model, and it prints them on every run whether or not anything failed, so a
+clean sweep reads as clean within a boundary rather than clean absolutely.
+[What it does not model](#what-it-does-not-model) is the same list in prose.
+
+Draft from the image rather than from a blank file. Produce a listing with the
+toolchain that built the firmware, and read the candidates out of it:
+
+```
+<target>-objdump -d firmware.elf > firmware.lst
+calx-telltale-census loop-candidates firmware.lst > firmware.register
+```
+
+Every field only a human can decide comes back `?`, and the ones that decide the
+answer are `measure=`, `unit=` and `from=`. `measure=` is the reason the tool
+exists: a counter tested before it moves never sees zero, so it wraps and the
+declared budget bounds nothing, and the correct form is one character away.
+`unit=ticks:<source id>` has to name the clock it was counted against, because a
+bare tick count is refused at parse time rather than being trusted. `from=` is
+the provenance you are willing to stand behind, and a result carries the weakest
+provenance it rests on, so one guess makes the whole answer a guess and says so.
+`calx-telltale grammar` prints the whole format, and
+[Drafting a register from an image](#drafting-a-register-from-an-image) covers
+what the adapter can and cannot see.
+
+Then ask it something. `check` holds each declaration to its obligations;
+`project` and `attain` price the compositions and say where each worst case is
+reached; `deadline` and `overrun` judge the blackout windows, and are worth
+running together because they can disagree about the same window.
+[Running it](#running-it) lists every verb and the exit codes.
+
 ## Quantity, unit, provenance
 
 Every number is a `Quantity`: an interval, a unit, and a provenance. The model
