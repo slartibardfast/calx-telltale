@@ -269,16 +269,18 @@ verdict resting on it a guess.
 register is curated rather than authored from nothing.
 
 ```
-calx-telltale-census loops <listing>          find the loops, from a disassembly listing
-calx-telltale-census draft <image>            list candidate functions, from the image
+calx-telltale-census loop-candidates <listing>   the backward branches, from a listing
+calx-telltale-census draft <image>               candidate functions, from the image
 ```
 
-`loops` is the one that finds waits. Produce a listing with the toolchain that
-built the firmware, and it reads the loops out of it:
+`loop-candidates` is the one that reaches waits. A backward branch is evidence
+of a loop rather than a loop, and a loop is not yet a wait, so what comes back
+is a set to curate. Produce a listing with the toolchain that built the
+firmware, and it reads the branches out of it:
 
 ```
 <target>-objdump -d firmware.elf > firmware.lst
-calx-telltale-census loops firmware.lst > firmware.register
+calx-telltale-census loop-candidates firmware.lst > firmware.register
 ```
 
 It is a separate binary, and separate on purpose. The core's empty dependency
